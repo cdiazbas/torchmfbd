@@ -1,1 +1,3 @@
 # torchmfbd
+
+pip install --editable .

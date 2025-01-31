@@ -6,6 +6,13 @@ __pycache__/
 # C extensions
 *.so
 
+# All temporary files
+*.npz
+examples/obs/
+examples/aux/
+*.fits
+*.h5
+
 # Distribution / packaging
 .Python
 build/
