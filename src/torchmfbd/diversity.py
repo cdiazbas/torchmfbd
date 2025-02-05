@@ -1,8 +1,6 @@
 import numpy as np
-import torchmfbd.util as util
-import torchmfbd.kl_modes as kl_modes
 
-def get_chromis_diversity(d_chromis=3.35):
+def _get_chromis_diversity(d_chromis=3.35):
     """
     Get the CHROMIS rms diversity coefficient peak
     to be multiplied by the defocusing Zernike
@@ -33,3 +31,29 @@ def get_chromis_diversity(d_chromis=3.35):
     a_4 = np.pi * d_chromis / (8 * np.sqrt(3) * wavelength * F_D**2)
     
     return a_4
+
+def get_diversity(defocus = 1.0,
+                            FD = 45.0,
+                            wavelength = 5500.0):
+    """
+    Get the rms diversity coefficient 
+    to be multiplied by the defocusing Zernike
+    to get the rms wavefront error in radians.
+
+    Parameters
+    ----------
+    defocus : float
+        Defocus in wavelength units (1.0lambda)
+    FD : float
+        Focal ratio
+    wavelength : float
+        Wavelength in Angstrom
+    """
+    
+    Delta = defocus * wavelength # 1 lambda
+    
+    d_cm = 8 * FD**2 * Delta
+
+    div = np.pi * d_cm / (8.0 * np.sqrt(3) * wavelength * FD**2)    
+    
+    return div

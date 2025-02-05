@@ -7,3 +7,6 @@ from .noise import *
 from .movie import *
 from .diversity import *
 from .nmf import *
+from .configuration import *
+from .regularization import *
+from .util import *

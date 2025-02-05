@@ -13,13 +13,13 @@ import scipy.ndimage as nd
 from nvitop import Device
 import logging
 import torchmfbd.kl_modes as kl_modes
-import torchmfbd.az_average as az_average
 import torchmfbd.noise as noise
 from torchmfbd.reg_smooth import RegularizationSmooth
 from torchmfbd.reg_iuwt import RegularizationIUWT
 import glob
 import pathlib
 import yaml
+import torchmfbd.configuration as configuration
 
 class Deconvolution(object):
     def __init__(self, config):
@@ -50,7 +50,11 @@ class Deconvolution(object):
         else:
             self.logger.info(f"Using configuration file {config}")
             self.config = self.read_config_file(config)
+
+        # Check configuration file for errors
+        self.config = configuration._check_config(self.config)
                 
+        # Check the presence of a GPU
         self.cuda = torch.cuda.is_available()        
 
         # Ger handlers to later check memory and usage of GPUs
@@ -90,79 +94,6 @@ class Deconvolution(object):
 
         self.psf_model = self.config['psf']['model']
 
-        # *****************
-            
-        # Compute the overfill to properly generate the PSFs from the wavefronts
-        # self.overfill = util.psf_scale(self.config['images']['wavelength'], 
-        #                                 self.config['telescope']['diameter'], 
-        #                                 self.config['images']['pix_size'])
-
-        # if (self.overfill < 1.0):
-        #     raise Exception(f"The pixel size is not small enough to model a telescope with D={self.telescope_diameter} cm")
-
-        # # Compute telescope aperture
-        # pupil = util.aperture(npix=self.npix, 
-        #                 cent_obs = self.config['telescope']['central_obscuration'] / self.config['telescope']['diameter'], 
-        #                 spider=0, 
-        #                 overfill=self.overfill)
-        
-        
-
-        # # PSF model parameterized with the wavefront
-        # if (self.psf_model.lower() in ['zernike', 'kl']):
-            
-        #     self.logger.info(f"PSF model: wavefront expansion")
-
-        #     if (self.psf_model.lower() not in ['zernike', 'kl']):
-        #         raise Exception(f"Unknown basis {self.basis}. Use 'zernike' or 'kl' for wavefront expansion")
-        
-        #     if (self.psf_model.lower() == 'zernike'):
-                
-        #         found, filename = self.find_basis_wavefront('zernike', self.config['psf']['nmax_modes'])
-
-        #         # Define Zernike modes        
-        #         if found:
-        #             self.logger.info(f"Loading precomputed Zernike {filename}")
-        #             tmp = np.load(f"{filename}")
-        #             basis = tmp['basis']           
-        #         else:                
-        #             self.logger.info(f"Computing Zernike modes {filename}")
-        #             basis = self.precalculate_zernike(overfill=self.overfill)                
-        #             np.savez(f"{filename}", basis=basis)
-
-        #     if (self.psf_model.lower() == 'kl'):
-
-        #         found, filename = self.find_basis_wavefront('kl', self.config['psf']['nmax_modes'])
-
-        #         if found:
-        #             self.logger.info(f"Loading precomputed KL basis: {filename}")
-        #             tmp = np.load(f"{filename}")
-        #             basis = tmp['basis']                
-        #         else:
-        #             self.logger.info(f"Computing KL modes {filename}")
-        #             self.kl = kl_modes.KL()              
-                    
-        #             basis = self.kl.precalculate(npix_image = self.npix, 
-        #                             n_modes_max = self.n_modes,                                 
-        #                             overfill=self.overfill)
-        #             np.savez(f"{filename}", basis=basis, variance=self.kl.varKL)
-            
-        #     self.pupil = torch.tensor(pupil.astype('float32')).to(self.device)
-        #     self.basis = torch.tensor(basis[0:self.n_modes, :, :].astype('float32')).to(self.device)        
-
-        #     self.logger.info(f"Wavefront")                        
-        #     self.logger.info(f"  * Using {self.n_modes} modes...")
-                
-        # # Compute the diffraction limit and the frequency grid
-        # self.cutoff = self.config['telescope']['diameter'] / (self.config['images']['wavelength'] * 1e-8) / 206265.0
-        # freq = np.fft.fftfreq(self.npix, d=self.config['images']['pix_size']) / self.cutoff
-        
-        # xx, yy = np.meshgrid(freq, freq)
-        # self.rho = np.sqrt(xx ** 2 + yy ** 2)
-
-        # self.diffraction_limit = self.config['images']['wavelength'] * 1e-8 / self.config['telescope']['diameter'] * 206265.0
-
-        # ***********************
                 
         # Generate Hamming window function for WFS correlation
         if (self.npix_apod > 0):
@@ -193,6 +124,8 @@ class Deconvolution(object):
         self.frames = []
         self.sigma = []
         self.diversity = []
+
+        self.external_regularizations = []
        
     def define_basis(self):
 
@@ -215,6 +148,10 @@ class Deconvolution(object):
                 unique_wavelengths.append(w)
             
             ind_wavelengths.append(unique_wavelengths.index(w))
+
+        # Normalize wavelengths to scale basis
+        unique_wavelengths = np.array(unique_wavelengths)
+        normalized_wavelengths = unique_wavelengths / np.max(unique_wavelengths)
 
         # Now iterate over all unique wavelengths and associate the basis
         # to the corresponding object
@@ -255,7 +192,7 @@ class Deconvolution(object):
                         basis = tmp['basis']           
                     else:                
                         self.logger.info(f"Computing Zernike modes {filename}")
-                        basis = self.precalculate_zernike(overfill=self.overfill)                
+                        basis = self.precalculate_zernike(overfill=overfill)                
                         np.savez(f"{filename}", basis=basis)
 
                 if (self.psf_model.lower() == 'kl'):
@@ -276,7 +213,10 @@ class Deconvolution(object):
                         np.savez(f"{filename}", basis=basis, variance=self.kl.varKL)
                 
                 pupil = torch.tensor(pupil.astype('float32')).to(self.device)
-                basis = torch.tensor(basis[0:self.n_modes, :, :].astype('float32')).to(self.device)        
+                basis = torch.tensor(basis[0:self.n_modes, :, :].astype('float32')).to(self.device)
+
+                # Following van Noort et al. (2005) we normalize the basis
+                basis /= normalized_wavelengths[i]
 
                 self.logger.info(f"Wavefront")                        
                 self.logger.info(f"  * Using {self.n_modes} modes...")
@@ -303,10 +243,10 @@ class Deconvolution(object):
 
         return
     
-    def add_regularization(self):
+    def set_regularizations(self):
 
         # Regularization parameters
-        self.logger.info(f"Regularization")
+        self.logger.info(f"Regularizations")
         self.regularization = []
         self.index_regularization = {
             'tiptilt': [],
@@ -329,6 +269,36 @@ class Deconvolution(object):
                 tmp.print()
                 loop += 1
 
+        self.logger.info(f"External regularizations")
+        for reg in self.external_regularizations:
+            self.regularization.append(reg.to(self.device))
+            self.index_regularization[reg.variable].append(loop)
+            reg.print()
+            loop += 1
+
+    def add_external_regularizations(self, external_regularization):        
+        """
+        Adds external regularizations to the model.
+
+        Parameters:
+        -----------
+
+        external_regularization : callable
+            A function or callable object that applies the external regularization.
+        lambda_reg : float
+            The regularization strength parameter.
+        variable : str
+            The name of the variable to which the regularization is applied.
+        **kwargs : dict
+            Additional keyword arguments to pass to the external_regularization function.
+
+        """
+
+        # Regularization parameters
+        self.logger.info(f"External regularization")
+        
+        self.external_regularizations.append(external_regularization)
+        
     def read_config_file(self, filename):
         """
         Read a configuration file in YAML format.
@@ -374,22 +344,6 @@ class Deconvolution(object):
         
         return True, filename
         
-    def azimuthal_power(self, image):
-        """
-        Compute the azimuthal power spectrum of an image.
-
-        Parameters:
-        image (numpy.ndarray): The input image for which the azimuthal power spectrum is to be computed.
-
-        Returns:
-        tuple: A tuple containing:
-            - numpy.ndarray: The normalized frequency array.
-            - numpy.ndarray: The power spectrum normalized by its first element.
-        """
-        _, freq_az = az_average.pspec(np.fft.fftshift(self.rho), azbins=1, binsize=1)
-        k, power = az_average.power_spectrum(image)
-        return 1.0/(freq_az * self.cutoff), power
-
     def precalculate_zernike(self, overfill):
         """
         Precalculate Zernike polynomials for a given overfill factor.
@@ -428,7 +382,7 @@ class Deconvolution(object):
                 
         return Z
     
-    def compute_annealing(self, modes, annealing, n_iterations):
+    def compute_annealing(self, modes, n_iterations):
         """
         Annealing function
         We start with 2 modes and end with all modes but we give steps of the number of
@@ -445,7 +399,7 @@ class Deconvolution(object):
         anneal = np.zeros(n_iterations, dtype=int)
         
         # Annealing schedules          
-        if annealing == 'linear':
+        if self.config['annealing']['type'] == 'linear':
             self.logger.info(f"Adding modes using linear schedule")
             for i in range(n_iterations):
                 if (i < self.config['annealing']['start_pct'] * n_iterations):
@@ -460,7 +414,7 @@ class Deconvolution(object):
                     index = np.clip((y1 - y0) / (x1 - x0) * (i - x0) + y0, y0, y1)
                     anneal[i] = modes[int(index)]
 
-        if annealing == 'sigmoid':
+        if self.config['annealing']['type'] == 'sigmoid':
             self.logger.info(f"Adding modes using sigmoid schedule")
             a = 7
             b = -5
@@ -470,7 +424,7 @@ class Deconvolution(object):
             anneal = (anneal + 0.1).astype(int)            
             anneal = modes[anneal]
 
-        if annealing == 'none':
+        if self.config['annealing']['type'] == 'none':
             self.logger.info(f"All modes always active")
             anneal = np.ones(n_iterations, dtype=int) * modes[-1]
 
@@ -611,7 +565,7 @@ class Deconvolution(object):
 
         return torch.tensor(mask).to(Sconj_S.device)
 
-    def compute_object(self, images_ft, psf_ft, sigma, type_filter='gaussian'):
+    def compute_object(self, images_ft, psf_ft, sigma, type_filter='tophat'):
         """
         Compute the object in Fourier space using the specified filter.
         Parameters:
@@ -621,7 +575,7 @@ class Deconvolution(object):
         psf_ft (torch.Tensor): 
             The Fourier transform of the point spread function (PSF).
         type_filter (str, optional): 
-            The type of filter to use ('gaussian'/'scharmer'). Default is 'gaussian'.
+            The type of filter to use ('tophat'/'scharmer'). Default is 'tophat'.
         Returns:
         --------
         torch.Tensor: The computed object in Fourier space.
@@ -645,8 +599,8 @@ class Deconvolution(object):
                             
                 out_filter_ft[i] = out_ft[i] * mask
             
-            # Use simple Wiener filter with Gaussian prior
-            if (self.image_filter[i] == 'gaussian'):
+            # Use simple Wiener filter with tophat prior            
+            if (self.image_filter[i] == 'tophat'):
                 out_ft[i] = Sconj_I / (Sconj_S + 1e-4)
                 out_filter_ft[i] = out_ft[i] * self.mask_diffraction_th[i][None, :, :]
 
@@ -762,8 +716,7 @@ class Deconvolution(object):
                    infer_object=False, 
                    optimizer='first', 
                    obj_in=None, 
-                   modes_in=None, 
-                   annealing='linear', 
+                   modes_in=None,                    
                    n_iterations=20):
         
 
@@ -827,14 +780,14 @@ class Deconvolution(object):
             self.logger.info(f"     - Size of frames {n_x} x {n_y}...")
                 
         self.finite_difference = util.FiniteDifference().to(self.device)
-        self.add_regularization()
+        self.set_regularizations()
                                                     
         # Compute the diffraction masks
         self.compute_diffraction_masks()
         
         # Annealing schedules        
         modes = np.cumsum(np.arange(2, self.noll_max+1))
-        self.anneal = self.compute_annealing(modes, annealing, n_iterations)
+        self.anneal = self.compute_annealing(modes, n_iterations)
                 
         # If the regularization parameter is a scalar, we assume that it is the same for all objects
         for reg in self.regularization:
@@ -978,16 +931,14 @@ class Deconvolution(object):
                         # Filter in Fourier
                         obj_filter_ft = self.fft_filter(obj_ft)                        
 
-                    else:                        
-                        obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, psf_ft, sigma_seq)
-                    
-                    if self.config['optimization']['loss'] == 'l2':
                         degraded_ft = obj_ft[:, :, None, :, :] * psf_ft
 
                         residual = self.weight[:, :, None, None, None] * (degraded_ft - frames_ft)
                         loss_mse = torch.mean((residual * torch.conj(residual)).real) / self.npix**2
 
-                    if self.config['optimization']['loss'] == 'momfbd':                        
+                    else:                        
+                        obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, psf_ft, sigma_seq)
+
                         loss_mse = torch.tensor(0.0).to(self.device)
 
                         # Sum over objects, frames and diversity channels
@@ -996,11 +947,12 @@ class Deconvolution(object):
                             t1 = torch.sum(frames_ft[i] * torch.conj(frames_ft[i]), dim=1)
                             t2 = torch.sum(torch.conj(frames_ft[i]) * psf_ft[i], dim=1)                        
                             loss_mse += torch.mean(t1 - t2 * torch.conj(t2) / Q).real / self.npix**2
+                                            
                                         
                     # Object regularization
                     loss_obj = torch.tensor(0.0).to(self.device)
                     for index in self.index_regularization['object']:
-                        loss_obj += self.regularization[index](obj_filter)
+                        loss_obj += self.regularization[index](obj_filter)                        
                     
                     # Total loss
                     loss = loss_mse + loss_obj

@@ -2,8 +2,9 @@ import numpy as np
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
+import torchmfbd.az_average as az_average
 
-__all__ = ['aperture']
+__all__ = ['aperture', 'psf_scale', 'apodize', 'azimuthal_power']
 
 def aperture(npix=256, cent_obs=0.0, spider=0, overfill=1.0):
     """
@@ -75,19 +76,16 @@ def sigmoid(x):
 def apodize(frames, window):
     """
     Apodizes the input frames by subtracting the mean value and applying a window function.
-    Parameters:
-    -----------
-    frames : torch.Tensor
-        The input tensor containing the frames to be apodized. The tensor can have 2, 3, 4, or 5 dimensions.
+    The mean value is computed along the last two dimensions of the input tensor.
+    The window function is applied differently depending on the number of dimensions of the input tensor.
+    The mean value is added back to the frames after applying the window function.
+    
+    Args:    
+        frames (torch.Tensor): The input tensor containing the frames to be apodized. The tensor can have 2, 3, 4, or 5 dimensions.
+    
     Returns:
-    --------
-    torch.Tensor
-        The apodized frames with the same shape as the input tensor.
-    Notes:
-    ------
-    - The mean value is computed along the last two dimensions of the input tensor.
-    - The window function is applied differently depending on the number of dimensions of the input tensor.
-    - The mean value is added back to the frames after applying the window function.
+        torch.Tensor: The apodized frames with the same shape as the input tensor.
+    
     """
     
     if frames.device != window.device:
@@ -113,3 +111,17 @@ def apodize(frames, window):
     frames_apodized += mean_val
 
     return frames_apodized
+
+
+
+def azimuthal_power(self, image):        
+    """
+    Compute the azimuthal power spectrum of an image.
+    Args:
+        image (numpy.ndarray): The input image for which the azimuthal power spectrum is to be computed.
+    Returns:
+        (f, p) (tuple): The normalized frequency array (f) and the azimuthally averaged power spectrum normalized by its first element (p).
+    """
+    _, freq_az = az_average.pspec(np.fft.fftshift(self.rho), azbins=1, binsize=1)
+    k, power = az_average.power_spectrum(image)
+    return 1.0/(freq_az * self.cutoff), power

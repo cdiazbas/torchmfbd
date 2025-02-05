@@ -14,39 +14,13 @@ if __name__ == '__main__':
     xy0 = [200, 200]
     lam = 7
     npix = 512
-    obs_file = f"../obs/spot_20200727_083509_8542_npix512_original.h5"
+    obs_file = f"spot_20200727_083509_8542_npix512_original.h5"
 
-    if (os.path.exists(obs_file)):
-        print(f'Reading observations from {obs_file}...')
-        f = h5py.File(obs_file, 'r')
-        im = f['im'][:]
-        im_d = None
-        f.close()
-    else:
-        root = '/net/diablos/scratch/sesteban/reduc/reduc_andres/spot_20200727_083509_8542'
-        label = '20200727_083509_8542_nwav_al'
-        print(f'Reading wavelength point {lam}...')
-        wb, nb = readsst(root, 
-                         label, 
-                         cam=0, 
-                         lam=lam, 
-                         mod=0, 
-                         seq=[0, 1], 
-                         xrange=[xy0[0], xy0[0]+npix], 
-                         yrange=[xy0[1], xy0[1]+npix], 
-                         destretch=False,
-                         instrument='CRISP')
-
-        ns, nf, nx, ny = wb.shape
-
-        # ns, no, nf, nx, ny
-        im = np.concatenate((wb[:, None, ...], nb[:, None, ...]), axis=1)
-        im_d = None
-
-        print(f"Saving observations to {obs_file}...")
-        f = h5py.File(obs_file, 'w')
-        f.create_dataset('im', data=im)
-        f.close()
+    print(f'Reading observations from {obs_file}...')
+    f = h5py.File(obs_file, 'r')
+    im = f['im'][:]
+    im_d = None
+    f.close()
     
     frames = im[:, :, :, 0:npix, 0:npix]
 
@@ -58,7 +32,7 @@ if __name__ == '__main__':
             
     n_scans, n_obj, n_frames, nx, ny = frames.shape
     
-    decSI = torchmfbd.Deconvolution('spot_8542_kl_patches.yaml')
+    decSI = torchmfbd.Deconvolution('kl.yaml')
 
     # Patchify and add the frames
     for i in range(2):        
@@ -68,7 +42,6 @@ if __name__ == '__main__':
     
     decSI.deconvolve(infer_object=False, 
                      optimizer='first', 
-                     annealing='sigmoid', 
                      simultaneous_sequences=16,
                      n_iterations=100)
         

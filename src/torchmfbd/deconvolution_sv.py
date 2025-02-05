@@ -104,6 +104,51 @@ class DeconvolutionSV(Deconvolution):
         self.logger.info(f"  * lr_modes={self.lr_modes}")
         self.logger.info(f"  * Scale of softplus {self.config['optimization']['softplus_scale']}...")
         
+    def define_basis(self):
+
+        self.rho = [None] * self.n_o
+        self.diffraction_limit = [None] * self.n_o
+        self.cutoff = [None] * self.n_o
+        self.image_filter = [None] * self.n_o
+
+        # First locate unique wavelengths. We will use the same basis for the same wavelength
+        ind_wavelengths = []
+        unique_wavelengths = []
+
+        for i in range(self.n_o):
+            self.cutoff[i] = self.config[f'object{i+1}']['cutoff']
+            self.image_filter[i] = self.config[f'object{i+1}']['image_filter']
+            w = self.config[f'object{i+1}']['wavelength']
+            if w not in unique_wavelengths:
+                unique_wavelengths.append(w)
+            
+            ind_wavelengths.append(unique_wavelengths.index(w))
+
+        # Now iterate over all unique wavelengths and associate the basis
+        # to the corresponding object
+        for i in range(len(unique_wavelengths)):
+
+            wavelength = unique_wavelengths[i]
+                    
+            # Compute the diffraction limit and the frequency grid
+            cutoff = self.config['telescope']['diameter'] / (wavelength * 1e-8) / 206265.0
+            freq = np.fft.fftfreq(self.npix, d=self.config['images']['pix_size']) / cutoff
+            
+            xx, yy = np.meshgrid(freq, freq)
+            rho = np.sqrt(xx ** 2 + yy ** 2)
+
+            diffraction_limit = wavelength * 1e-8 / self.config['telescope']['diameter'] * 206265.0
+
+            self.logger.info(f"Wavelength {i} ({wavelength} A)")
+            self.logger.info(f"  * Diffraction: {diffraction_limit} arcsec")
+            self.logger.info(f"  * Diffraction (x1.22): {1.22 * diffraction_limit} arcsec")
+
+            for j in range(self.n_o):
+                if ind_wavelengths[j] == i:
+                    self.rho[j] = rho
+                    self.diffraction_limit[j] = diffraction_limit                
+
+        return
 
     def fft_filter_image(self, obj, mask_diffraction):
         """
@@ -255,7 +300,6 @@ class DeconvolutionSV(Deconvolution):
                    infer_tiptilt=True, 
                    infer_modes=True, 
                    tiptilt_init=None,
-                   annealing='linear',
                    n_iterations=20,
                    batch_size=64):
         
@@ -306,6 +350,9 @@ class DeconvolutionSV(Deconvolution):
         # Combine all frames
         self.frames_apodized, self.diversity, self.init_frame_diversity, self.sigma = self.combine_frames()
 
+        # Define all basis
+        self.define_basis()
+
         # Fill the list of frames and apodize the frames if needed
         for i in range(self.n_o):
             self.frames_apodized[i] = self.frames_apodized[i].to(self.device)
@@ -327,11 +374,11 @@ class DeconvolutionSV(Deconvolution):
         self.add_regularization()
 
         # Compute the diffraction masks
-        self.compute_diffraction_masks(n_x, n_y)
+        self.compute_diffraction_masks()
         
         # Annealing schedules        
         modes = np.arange(self.n_modes)
-        self.anneal = self.compute_annealing(modes, annealing, n_iterations)
+        self.anneal = self.compute_annealing(modes, n_iterations)
 
         # If the regularization parameter is a scalar, we assume that it is the same for all objects
         for reg in self.regularization:
@@ -422,7 +469,6 @@ class DeconvolutionSV(Deconvolution):
                 obj_infer.append(obj[i].clone().detach().to(self.device).requires_grad_(True))
             modes_infer = modes.clone().detach().to(self.device).requires_grad_(True)
             tiptilt_infer = tiptilt.clone().detach().to(self.device).requires_grad_(True)
-
             
             # Parameters to be optimized
             parameters = [{'params': obj_infer, 'lr': self.lr_obj}, {'params': modes_infer, 'lr': self.lr_modes}, {'params': tiptilt_infer, 'lr': self.lr_tiptilt}]
@@ -447,23 +493,23 @@ class DeconvolutionSV(Deconvolution):
                 indices = np.array_split(indices, np.ceil(self.n_f / self.batch_size))               
 
                 # Accumulate the MSE loss for all batches
-                loss_mse = 0.0
-                loss_tiptilt = 0.0
-                loss_modes = 0.0
-                loss_obj = 0.0
+                loss_mse = torch.tensor(0.0).to(self.device)
+                loss_tiptilt = torch.tensor(0.0).to(self.device)
+                loss_modes = torch.tensor(0.0).to(self.device)
+                loss_obj = torch.tensor(0.0).to(self.device)
 
                 obj_filtered = [None] * self.n_o
 
                 for i in range(self.n_o):
 
                     # Filter the object in the Fourier domain
-                    if self.config['filter']['image_filter'] == 'gaussian':
+                    if self.image_filter[i] == 'tophat':                        
                         obj_filtered[i] = self.fft_filter_image(obj_infer[i], self.mask_diffraction_th[i])
                     else:
                         obj_filtered[i] = obj_infer
                     
                     for j, ind in enumerate(indices):
-                
+                                                
                         # Compute the synthetic images taking into account the tip-tilt and modes
                         syn, tiptilt, modes = self.compute_syn(frames_apodized_seq[i][:, ind, :, :], 
                                                                              obj_filtered[i], 

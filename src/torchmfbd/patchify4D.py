@@ -6,23 +6,18 @@ from einops import rearrange
 class Patchify4D(object):
     def __init__(self):
         super().__init__()
-        # self.p = patch_size
-        # self.unfold = torch.nn.Unfold(kernel_size=patch_size, stride=stride_size)
-        # self.fold = torch.nn.Fold(kernel_size=patch_size, stride=stride_size)
 
-    def patchify(self, x, patch_size=56, stride_size=56, flatten_sequences=True):
+    def patchify(self, x, patch_size=64, stride_size=64, flatten_sequences=True):
         """
         Splits the input tensor into patches.
         Args:
-            x (torch.Tensor): Input tensor of shape (n_scans, n_obj, n_frames, nx, ny).
-            patch_size (int, optional): Size of each patch. Default is 56.
-            stride_size (int, optional): Stride size for patch extraction. Default is 56.
+            x (torch.Tensor): Input tensor of shape (n_scans, n_frames, nx, ny).
+            patch_size (int, optional): Size of each patch. Default is 64.
+            stride_size (int, optional): Stride size for patch extraction. Default is 64.
         Returns:
-            torch.Tensor: Tensor containing the patches with shape (n_scans, L, n_frames, patch_size, patch_size),
-                          where L is the number of patches extracted.
+            torch.Tensor: Tensor containing the patches with shape (n_scans, L, n_frames, patch_size, patch_size), where L is the number of patches extracted.
         """
-        
-                    
+                            
         self.n_scans, self.n_frames, self.nx, self.ny = x.shape
 
         self.output_size = (self.nx, self.ny)

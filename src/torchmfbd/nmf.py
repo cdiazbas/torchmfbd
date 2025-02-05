@@ -5,15 +5,39 @@ import torchmfbd.kl_modes as kl_modes
 import torch
 import sklearn.decomposition
 import logging
+import scipy.linalg as la
 
-class NMF(object):
+class Basis(object):
     """
-    Dataset class that will provide data during training. Modify it accordingly
-    for your dataset. This one shows how to do augmenting during training for a 
-    very simple training set    
-    """
+    Class that generates a set of Point Spread Functions (PSFs) using Kolmogorov turbulence and computes the Non-negative Matrix Factorization (NMF) of the PSFs.
 
-    def __init__(self, 
+    Parameters:
+    -----------
+    n_pixel : int, optional
+        Number of pixels for the telescope aperture (default is 128).
+    wavelength : float, optional
+        Wavelength in nanometers (default is 8542.0).
+    diameter : float, optional
+        Diameter of the telescope in centimeters (default is 100.0).
+    pix_size : float, optional
+        Pixel size in arcseconds (default is 0.059).
+    central_obs : float, optional
+        Central obscuration of the telescope in centimeters (default is 0.0).
+    n_modes : int, optional
+        Number of modes for the KL basis (default is 250).
+    r0_min : float, optional
+        Minimum Fried parameter in centimeters (default is 15.0).
+    r0_max : float, optional
+        Maximum Fried parameter in centimeters (default is 50.0).
+    Raises:
+    -------
+    Exception
+        If the pixel size is not small enough to model the telescope with the given diameter.
+    
+    """
+    
+    
+    def __init__(self,                 
                  n_pixel=128,
                  wavelength=8542.0,
                  diameter=100.0,
@@ -22,13 +46,7 @@ class NMF(object):
                  n_modes=250,
                  r0_min=15.0,
                  r0_max=50.0):
-        """
-        Very simple training set made of 200 Gaussians of width between 0.5 and 1.5
-        We later augment this with a velocity and amplitude.
-        
-        Args:
-            n_training (int): number of training examples including augmenting
-        """
+                
         super().__init__()
 
         self.logger = logging.getLogger("nmf ")
@@ -104,7 +122,7 @@ class NMF(object):
         
         return wavefront, psf_norm
         
-    def compute_psfs(self, n_training, factor=1.0, n_low=44):
+    def _compute_psfs(self, n_training, factor=1.0, n_low=44):
         
         self.n_training = n_training
 
@@ -139,7 +157,7 @@ class NMF(object):
 
         return psf_all, modes_all, r0_all
     
-    def compute_psf_diffraction(self):
+    def _compute_psf_diffraction(self):
         
         psf_all = np.zeros((self.n_pixel, self.n_pixel), dtype='float32')                    
                                                                     
@@ -154,7 +172,7 @@ class NMF(object):
 
         return psf_all
     
-    def compute_nmf(self, n, n_iter=400, verbose=0):
+    def compute(self, type='nmf', n=100, n_iter=400, verbose=0):
         """
         Compute Non-negative Matrix Factorization (NMF) for a set of generated Point Spread Functions (PSFs).
         Parameters:
@@ -167,24 +185,42 @@ class NMF(object):
         It then computes the NMF of the reshaped PSFs and saves the resulting basis, diffraction PSF, modes, and coefficients
         to a file in the 'basis' directory. The filename includes the wavelength, number of modes, and r0 range.
         """
+
+        if type not in ['nmf', 'pca']:
+            raise ValueError(f"Invalid type {type} for computing the basis functions")
         
         self.logger.info(f"Generating {n} random PSFs with Kolmogorov turbulence with r0=[{self.r0_min}, {self.r0_max}]...")
         
-        psf, modes, r0 = self.compute_psfs(n)
-        psf_diff = self.compute_psf_diffraction()
+        psf, modes, r0 = self._compute_psfs(n)
+        psf_diff = self._compute_psf_diffraction()
 
         tmp = psf.reshape((self.n_pixel * self.n_pixel, n)).T
 
-        self.logger.info(f"Solving NMF (be patient)...")
-        nmf = sklearn.decomposition.NMF(n_components=self.n_modes, init='nndsvda', random_state=0, max_iter=n_iter, verbose=verbose)
-        W = nmf.fit_transform(tmp)
-        H = nmf.components_
-        Vh = H
-        coeffs = W
+        if type == 'nmf':
+            self.logger.info(f"Solving NMF (be patient)...")
+            nmf = sklearn.decomposition.NMF(n_components=self.n_modes, init='nndsvda', random_state=0, max_iter=n_iter, verbose=verbose)
+            W = nmf.fit_transform(tmp)
+            H = nmf.components_
+            Vh = H
+            coeffs = W
 
-        filename = f'basis/nmf_{int(self.wavelength)}_nmf_{self.n_modes}_r0_{int(self.r0_min)}_{int(self.r0_max)}.npz'
-        self.logger.info(f"Saving NMF file on {filename}...")
-        np.savez(filename, basis=Vh, psf_diffraction=psf_diff, modes=modes, coeffs=coeffs, info=[self.wavelength, self.diameter, self.pix_size, self.central_obs])
+            filename = f'basis/nmf_{int(self.wavelength)}_nmf_{self.n_modes}_r0_{int(self.r0_min)}_{int(self.r0_max)}.npz'
+            self.logger.info(f"Saving NMF file on {filename}...")
+            np.savez(filename, basis=Vh, psf_diffraction=psf_diff, modes=modes, coeffs=coeffs, info=[self.wavelength, self.diameter, self.pix_size, self.central_obs])
+
+        if type == 'nmf':
+            self.logger.info(f"Solving PCA (be patient)...")
+
+            cov = tmp @ tmp.T
+            U, S2, Vh = la.svd(cov, full_matrices=False)
+
+            Vh = (Vh @ tmp) / np.sqrt(S2[:, None])
+
+            coeffs = tmp @ Vh.T
+        
+            filename = f'basis/pca_{int(self.wavelength)}_nmf_{self.n_modes}_r0_{int(self.r0_min)}_{int(self.r0_max)}.npz'
+            self.logger.info(f"Saving PCA file on {filename}...")
+            np.savez(filename, basis=Vh, psf_diffraction=psf_diff, modes=modes, coeffs=coeffs, info=[self.wavelength, self.diameter, self.pix_size, self.central_obs])
     
 
 if (__name__ == '__main__'):

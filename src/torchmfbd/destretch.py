@@ -42,7 +42,7 @@ def destretch(frames,
 
     tiptilt = torch.zeros((n_seq, n_f, 2, ngrid, ngrid), device=device, requires_grad=True)
 
-    optimizer = torch.optim.AdamW([tiptilt], lr=lr)
+    optimizer = torch.optim.Adam([tiptilt], lr=lr)
 
     # Reference frame
     ir = frames[:, :, reference_frame:reference_frame + 1, :, :]

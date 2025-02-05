@@ -11,7 +11,7 @@ class RegularizationSmooth(Regularization):
         self.finite_difference = util.FiniteDifference()
 
     def __call__(self, x):
-        
+                   
         if self.active:
 
             # Tip-tilts and modes have the additional dimension nf
@@ -19,7 +19,10 @@ class RegularizationSmooth(Regularization):
                 tmp = rearrange(x, 'b nf nm nx ny -> (b nf) nm nx ny')                
                 loss = self.lambda_reg * torch.mean(self.finite_difference(tmp)**2)
             else:
-            # Objects do not have the additional dimension nf
-                loss = self.lambda_reg * torch.mean(self.finite_difference(x)**2)
+                # Objects are passed as a list
+                n_o = len(x)
+                loss = 0.0
+                for i in range(n_o):
+                    loss += self.lambda_reg * torch.mean(self.finite_difference(x[i])**2)
 
         return loss
