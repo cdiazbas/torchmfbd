@@ -42,12 +42,12 @@ be defined in the code as a dictionary:
     object1:
         wavelength : 8542.0
         image_filter: tophat
-        cutoff : 0.75
+        cutoff : [0.75, 0.80]
 
     object2:
         wavelength : 8542.0
         image_filter: tophat
-        cutoff : 0.75
+        cutoff : [0.75, 0.80]
         
     optimization:
         gpu : 0
@@ -55,6 +55,7 @@ be defined in the code as a dictionary:
         softplus_scale : 1.0        
         lr_obj : 0.02
         lr_modes : 0.08
+        shod_object_info : False
 
     regularization:
         iuwt1:

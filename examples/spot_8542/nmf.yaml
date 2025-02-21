@@ -11,12 +11,12 @@ images:
 object1:
     wavelength : 8542.0
     image_filter: tophat
-    cutoff : 0.75
+    cutoff : [0.75, 0.75]
 
 object2:
     wavelength : 8542.0
     image_filter: tophat
-    cutoff : 0.75
+    cutoff : [0.75, 0.75]
         
 optimization:
     gpu : 0

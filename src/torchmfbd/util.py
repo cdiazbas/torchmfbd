@@ -114,7 +114,7 @@ def apodize(frames, window):
 
 
 
-def azimuthal_power(self, image):        
+def azimuthal_power_old(self, image):        
     """
     Compute the azimuthal power spectrum of an image.
     Args:
@@ -125,3 +125,23 @@ def azimuthal_power(self, image):
     _, freq_az = az_average.pspec(np.fft.fftshift(self.rho), azbins=1, binsize=1)
     k, power = az_average.power_spectrum(image)
     return 1.0/(freq_az * self.cutoff), power
+
+def azimuthal_power(image, d=1):
+
+    n = image.shape[0] // 2
+    f = np.fft.fft2(image)
+    fshift = np.fft.fftshift(f)
+    power = np.abs(fshift)**2
+
+    freq = np.fft.fftfreq(image.shape[0], d=d)
+        
+    k, pow1d = azimuthalAverage(power, returnradii=True)
+
+    ind = np.where(k < n)
+    k = k[ind]
+    pow1d = pow1d[ind]
+
+    k = np.interp(k, np.arange(n), freq[0:n])
+        
+    return k, pow1d
+

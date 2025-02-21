@@ -49,5 +49,5 @@ def _check_config(config):
         if "object" in k:
             if v["image_filter"] not in ["tophat", "scharmer", "none"]:
                 raise ValueError(f"Invalid value for image_filter. It is {v['image_filter']} but should be tophat, scharmer or none")
-                        
+                                    
     return config

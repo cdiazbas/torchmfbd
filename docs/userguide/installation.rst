@@ -36,7 +36,7 @@ the requirements. For example, you can do:
 
     git clone https://github.com/aasensio/torchmfbd.git
     cd torchmfbd
-    python setup.py install
+    pip install -e .
 
 Requirements
 ------------
@@ -48,10 +48,9 @@ pretty straightforward to install:
 * ``scipy``
 * ``matplotlib``
 * ``tqdm``
-* ``skimage``
-* ``sklearn``
+* ``scikit-image``
+* ``scikit-learn``
 * ``nvitop``
-* ``yaml``
+* ``pyyaml``
 * ``einops``
-* ``pkgutil``
-
+* ``dict_hash``

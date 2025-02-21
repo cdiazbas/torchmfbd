@@ -1,4 +1,5 @@
 from torchmfbd.noise_svd import noise_estimation
+import torch
 
 def compute_noise(frames):
     """
@@ -16,5 +17,7 @@ def compute_noise(frames):
     n_scans, n_frames, nx, ny = frames.shape
     
     sigma = noise_estimation(frames.numpy())
+
+    sigma = torch.tensor(sigma.astype('float32')).to(frames.device)
     
     return sigma

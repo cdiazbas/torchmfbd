@@ -7,15 +7,17 @@ class Patchify4D(object):
     def __init__(self):
         super().__init__()
 
-    def patchify(self, x, patch_size=64, stride_size=64, flatten_sequences=True):
+    def patchify(self, x, patch_size=64, stride_size=64, flatten_sequences=True, return_coordinates=False):
         """
         Splits the input tensor into patches.
         Args:
             x (torch.Tensor): Input tensor of shape (n_scans, n_frames, nx, ny).
             patch_size (int, optional): Size of each patch. Default is 64.
             stride_size (int, optional): Stride size for patch extraction. Default is 64.
+            flatten_sequences (bool, optional): If True, the output tensor will have shape (n_scans * n_frames, patch_size, patch_size). Default is True.
+            return_coordinates (bool, optional): If True, the function will return the coordinates of the patches. Default is False.
         Returns:
-            torch.Tensor: Tensor containing the patches with shape (n_scans, L, n_frames, patch_size, patch_size), where L is the number of patches extracted.
+            torch.Tensor: Tensor containing the patches with shape (n_scans, L, n_frames, patch_size, patch_size), where L is the number of patches extracted.            
         """
                             
         self.n_scans, self.n_frames, self.nx, self.ny = x.shape
@@ -38,7 +40,7 @@ class Patchify4D(object):
                         
         x = F.unfold(x, kernel_size=self.K, stride=self.S)
         self.mask = F.unfold(self.mask, kernel_size=self.K, stride=self.S)
-        
+                
         # x -> B (c*p*p) L
         self.n_patches = x.shape[-1]
         
@@ -49,8 +51,28 @@ class Patchify4D(object):
         else:
             a = rearrange(x, '(n) (f x y) L -> n L f x y', x=self.K, y=self.K, n=self.n_scans)
             self.mask = rearrange(self.mask, '(n) (f x y) L -> n L f x y', x=self.K, y=self.K, n=self.n_scans)
+
+        if return_coordinates:
+            x = 1.0 * torch.arange(self.nx) - self.nx // 2
+            y = 1.0 * torch.arange(self.ny) - self.ny // 2
+            X, Y = torch.meshgrid(x, y, indexing='ij')
+            coordX = F.unfold(X[None, None, :, :], kernel_size=self.K, stride=self.S)            
+            coordY = F.unfold(Y[None, None, :, :], kernel_size=self.K, stride=self.S)
+
+            if self.flatten_sequences:            
+                coordX = rearrange(coordX, '(n) (f x y) L -> (n L) f x y', x=self.K, y=self.K, n=self.n_scans)
+                coordY = rearrange(coordY, '(n) (f x y) L -> (n L) f x y', x=self.K, y=self.K, n=self.n_scans)
+
+            patchX = torch.mean(coordX, dim=(-1, -2))
+            patchY = torch.mean(coordY, dim=(-1, -2))
+
+            XY = torch.cat([patchX, patchY], dim=-1)
+            
+            return a, XY
+
+        else:
                 
-        return a
+            return a
     
     def unpatchify(self, x, apodization=0):
         """

@@ -10,12 +10,12 @@ images:
 object1:
     wavelength : 8542.0
     image_filter: tophat
-    cutoff : [0.75, 0.75]
+    cutoff : [0.65, 0.85]
 
 object2:
     wavelength : 8542.0
     image_filter: tophat
-    cutoff : [0.75, 0.75]
+    cutoff : [0.65, 0.85]
     
 optimization:
     gpu : 0
@@ -23,7 +23,6 @@ optimization:
     softplus_scale : 1.0    
     lr_obj : 0.02
     lr_modes : 0.08
-    show_object_info: False
 
 regularization:
      iuwt1:
@@ -32,7 +31,7 @@ regularization:
         nbands : 5
 
 psf:
-    model : kl
+    model : zernike
     nmax_modes : 44
 
 initialization:
@@ -43,3 +42,6 @@ annealing:
     type: sigmoid
     start_pct : 0.0
     end_pct : 0.85
+
+atmosphere:
+    heights: [0.0, 5.0, 10.0]
