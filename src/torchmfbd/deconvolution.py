@@ -22,7 +22,7 @@ import pathlib
 import yaml
 import torchmfbd.configuration as configuration
 import time
-# from pytorch_optimizer import AdaHessian
+from pytorch_optimizer import Shampoo
 
 class Deconvolution(object):
     def __init__(self, config, add_piston=False):
@@ -957,7 +957,7 @@ class Deconvolution(object):
                     parameters = [{'params': modes, 'lr': self.lr_modes}]
 
                 opt = torch.optim.Adam(parameters)
-                # opt = AdaHessian([modes])
+                # opt = Shampoo(parameters)                
                 
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, 3*n_iterations)
 
@@ -1053,6 +1053,8 @@ class Deconvolution(object):
                     tmp['mem'] = f'{memory_usage} ({memory_pct})'
 
                 delta_modes = torch.mean(torch.abs(modes.detach() - modes_previous))
+
+                modes_previous = modes.clone().detach()
 
                 tmp['active'] = f'{n_active}'
                 if self.show_object_info:

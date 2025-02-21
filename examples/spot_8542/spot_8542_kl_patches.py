@@ -43,7 +43,7 @@ if __name__ == '__main__':
     decSI.deconvolve(infer_object=False, 
                      optimizer='first', 
                      simultaneous_sequences=16,
-                     n_iterations=100)
+                     n_iterations=350)
         
     # modes = decSI.modes.cpu().numpy()
     # # psf = patchify.unpatchify(decSI.psf).cpu().numpy()
