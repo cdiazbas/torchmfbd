@@ -30,7 +30,7 @@ generates a tensor of shape ``(196, 12, 64, 64)``. The patches can be unpatchifi
 
 ::
 
-    frames_back = patchify.unpatchify(patches, apodization=0)
+    frames_back = patchify.unpatchify(patches, apodization=0, weight_type='gaussian', weight_param=1.0)
 
 where an apodization can be applied to each patch, often used to remove border effects during the deconvolution.
 
@@ -51,3 +51,9 @@ The ``unpatchify`` function has the following options:
     Tensor of shape ``(n_seq, n_patches, n_frames, n_x_patch, n_y_patch)`` with the patches to be unpatchified.
 * ``apodization``: int
     Size of the apodization to be applied to each patch. Default is 0.
+* ``weight_type``: str
+    Type of apodization to be applied. Default is None. Options are (None, 'cosine', 'gaussian').
+* ``weight_param``: float
+    Parameter of the apodization. Default is 1.0. The parameter is given in normalized units for 'gaussian' and in pixels for 'cosine'.
+
+The weighting window can always be accessed on the property ``weight`` of the ``Patchify4D`` class. This allows the user to correctly define the weight of the patches to reduce artifacts.

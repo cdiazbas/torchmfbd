@@ -110,12 +110,18 @@ class DeconvolutionMetapupils(Deconvolution):
                                                    self.XY.cpu().numpy(), 
                                                    self.config['telescope']['diameter'] / 100, 
                                                    h,
-                                                   cm_per_pix=5.0)
+                                                   cm_per_pix=5.0)            
             self.DMetapupil[i] = DMetapupil
-            self.projection_matrices.append(M[:, None, :, :])
+            self.projection_matrices.append(M[:, None, :, :])        
 
         self.projection_matrices = np.concatenate(self.projection_matrices, axis=1)
         self.projection_matrices = torch.tensor(self.projection_matrices, device=self.device, dtype=torch.float32)
+
+        # We need to add the piston mode to the basis
+        self.logger.info(f"Including piston mode...")
+        for i in range(self.n_o):
+            piston = torch.ones(1, self.npix, self.npix).to(self.device) * self.pupil[i]
+            self.basis[i] = torch.cat([piston, self.basis[i]], dim=0)
 
     def plot_metapupils(self):
         zernike_projection = projection.ZernikeProjectionMatrix()
@@ -271,7 +277,7 @@ class DeconvolutionMetapupils(Deconvolution):
                     frames_apodized_seq.append(self.frames_apodized[i][seq, ...])
                     frames_ft.append(torch.fft.fft2(self.frames_apodized[i][seq, ...]))
                     sigma_seq.append(self.sigma[i][seq, ...])
-                    projection_seq.append(self.projection_matrices[seq, :, :, :])
+                    projection_seq.append(self.projection_matrices[seq, :, :, :])                    
 
                 n_seq = len(seq)                                            
                             
@@ -282,10 +288,11 @@ class DeconvolutionMetapupils(Deconvolution):
                 modes_nopiston = modes.clone()
                 modes_nopiston[:, :, 0] = 0.0
                             
-                # modes -> (n_seq, n_f, self.n_modes)                    
+                # modes -> (n_seq, n_f, self.n_modes)                                    
                 psf, psf_ft = self.compute_psfs(modes_nopiston[:, :, 0:n_active], projection_seq)
                 
-                obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, psf_ft, sigma_seq)
+                if self.show_object_info or loop == n_iterations - 1:
+                    obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, psf_ft, sigma_seq)                        
 
                 loss_mse = torch.tensor(0.0).to(self.device)
 
@@ -306,9 +313,7 @@ class DeconvolutionMetapupils(Deconvolution):
                                                     
                 # Save some information for the progress bar
                 self.loss_local = loss.detach()
-                self.obj_filter = [None] * self.n_o
-                for i in range(self.n_o):
-                    self.obj_filter[i] = obj_filter[i].detach()
+                self.obj_filter = [None] * self.n_o                
                 self.loss_mse_local = loss_mse.detach()
                 self.loss_obj_local = loss_obj.detach()
 
@@ -316,7 +321,7 @@ class DeconvolutionMetapupils(Deconvolution):
                         
                 opt.step()
 
-                scheduler.step()
+                # scheduler.step()
 
                 if self.cuda:
                     gpu_usage = f'{self.handle.gpu_utilization()}'            
@@ -330,8 +335,9 @@ class DeconvolutionMetapupils(Deconvolution):
                     tmp['mem'] = f'{memory_usage} ({memory_pct})'
 
                 tmp['active'] = f'{n_active}'
-                tmp['contrast'] = f'{torch.std(self.obj_filter[0]) / torch.mean(self.obj_filter[0]) * 100.0:7.4f}'
-                tmp['minmax'] = f'{torch.min(self.obj_filter[0]):7.4f}/{torch.max(self.obj_filter[0]):7.4f}'
+                if self.show_object_info:
+                    tmp['contrast'] = f'{torch.std(self.obj_filter[0]) / torch.mean(self.obj_filter[0]) * 100.0:7.4f}'
+                    tmp['minmax'] = f'{torch.min(self.obj_filter[0]):7.4f}/{torch.max(self.obj_filter[0]):7.4f}'
                 tmp['LMSE'] = f'{self.loss_mse_local.item():8.6f}'                
                 tmp['LOBJ'] = f'{self.loss_obj_local.item():8.6f}'
                 tmp['L'] = f'{self.loss_local.item():7.4f}'
@@ -342,12 +348,14 @@ class DeconvolutionMetapupils(Deconvolution):
                 # Store the results for the current set of sequences
                 self.loss[i_seq] = losses.detach()
 
-                for i in range(self.n_o):
-                    psf[i] = psf[i].detach()                    
-                    obj_filter[i] = obj_filter[i].detach()
-                    
-                self.psf_seq[i_seq] = psf                
-                self.obj_seq[i_seq] = obj_filter
+                if (loop == n_iterations - 1):
+
+                    for i in range(self.n_o):
+                        psf[i] = psf[i].detach()                    
+                        obj_filter[i] = obj_filter[i].detach()
+                        
+                    self.psf_seq[i_seq] = psf                
+                    self.obj_seq[i_seq] = obj_filter
                         
         # Concatenate the results from all sequences and all objects independently
         self.psf = [None] * self.n_o        

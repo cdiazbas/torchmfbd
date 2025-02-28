@@ -74,7 +74,7 @@ class Patchify4D(object):
                 
             return a
     
-    def unpatchify(self, x, apodization=0):
+    def unpatchify(self, x, apodization=0, weight_type=None, weight_params=None):
         """
         Reconstructs the original image from patches.
         Args:
@@ -111,6 +111,29 @@ class Patchify4D(object):
             x = x[:, :, apodization:-apodization, apodization:-apodization]
             mask = mask[:, :, apodization:-apodization, apodization:-apodization]
 
+        # Weight
+        if weight_type is None:
+            npix = x.shape[-2]
+            self.weight = torch.ones((npix, npix)).to(x.device)
+        
+        if weight_type == 'gaussian':
+            npix = x.shape[-2]
+            xx = torch.linspace(-1, 1, npix, device=x.device)
+            yy = torch.linspace(-1, 1, npix, device=x.device)
+            X, Y = torch.meshgrid(xx, yy, indexing='ij')
+            R = torch.sqrt(X**2 + Y**2)
+            self.weight = torch.exp(-R**2 / weight_params)
+
+        if weight_type == 'cosine':
+            npix = x.shape[-2]
+            npix_apod = min(weight_params, npix//2)
+            win = np.hanning(2*npix_apod)
+            winOut = np.ones(npix)
+            winOut[0:npix_apod] = win[0:npix_apod]
+            winOut[-npix_apod:] = win[-npix_apod:]
+            weight = np.outer(winOut, winOut)
+            self.weight = torch.tensor(weight, device=x.device)
+        
         # Reduce the size of the patch to account for the apodization
         K = self.K - 2*apodization
 
@@ -118,6 +141,10 @@ class Patchify4D(object):
         new_size = int((self.L - 1) * self.S + 1 - 2*self.P + self.D*(K-1))
                         
         output_size = (new_size, new_size)
+
+        # Apply the weighting to the patches
+        x *= self.weight
+        mask *= self.weight
                 
         if self.flatten_sequences:
             x = rearrange(x, '(n L) f x y -> (n) (f x y) L', n=self.n_scans, L=self.n_patches)

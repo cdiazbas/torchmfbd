@@ -22,7 +22,7 @@ import pathlib
 import yaml
 import torchmfbd.configuration as configuration
 import time
-from pytorch_optimizer import Shampoo
+# from pytorch_optimizer import Shampoo
 
 class Deconvolution(object):
     def __init__(self, config, add_piston=False):
@@ -38,6 +38,8 @@ class Deconvolution(object):
             Batch size
         """
         super().__init__()
+
+        torch.set_default_dtype(torch.float32)
         
         self.logger = logging.getLogger("deconvolution ")
         self.logger.setLevel(logging.DEBUG)
@@ -148,6 +150,9 @@ class Deconvolution(object):
             self.show_object_info = self.config['optimization']['show_object_info']
         else:
             self.show_object_info = False
+
+        self.simultaneous_sequences = None
+        self.infer_object = None
        
     def define_basis(self):
 
@@ -162,7 +167,7 @@ class Deconvolution(object):
         ind_wavelengths = []
         unique_wavelengths = []
 
-        for i in range(self.n_o):            
+        for i in range(self.n_o):
             self.cutoff[i] = self.config[f'object{i+1}']['cutoff']
             self.image_filter[i] = self.config[f'object{i+1}']['image_filter']
             w = self.config[f'object{i+1}']['wavelength']
@@ -172,7 +177,7 @@ class Deconvolution(object):
             ind_wavelengths.append(unique_wavelengths.index(w))
 
         # Normalize wavelengths to scale basis
-        unique_wavelengths = np.array(unique_wavelengths)
+        unique_wavelengths = np.array(unique_wavelengths).astype('float32')
         normalized_wavelengths = unique_wavelengths / np.max(unique_wavelengths)
 
         # Now iterate over all unique wavelengths and associate the basis
@@ -253,17 +258,18 @@ class Deconvolution(object):
                 # so that the wavefront is given in radians
                 basis /= normalized_wavelengths[i]
 
+                if (self.add_piston):
+                    self.logger.info(f"Adding piston mode...")
                 self.logger.info(f"Wavefront")                        
                 self.logger.info(f"  * Using {self.n_modes} modes...")
-                if (self.add_piston):
-                    self.logger.info(f"Adding piston mode")
+                
                     
             # Compute the diffraction limit and the frequency grid
             cutoff = self.config['telescope']['diameter'] / (wavelength * 1e-8) / 206265.0
             freq = np.fft.fftfreq(self.npix, d=self.config['images']['pix_size']) / cutoff
             
             xx, yy = np.meshgrid(freq, freq)
-            rho = np.sqrt(xx ** 2 + yy ** 2)
+            rho = np.sqrt(xx ** 2 + yy ** 2).astype('float32')
 
             diffraction_limit = wavelength * 1e-8 / self.config['telescope']['diameter'] * 206265.0
 
@@ -607,13 +613,13 @@ class Deconvolution(object):
                 
         nb, nx, ny = filt.shape
 
-        mask = np.zeros_like(filt)
+        mask = np.zeros_like(filt).astype('float32')
 
         for ib in range(nb):                
             mask[ib, :, :] = flood(1.0 - filt[ib, :, :], (nx//2, ny//2), tolerance=0.9)
             mask[ib, :, :] = np.fft.fftshift(mask[ib, :, :])
         
-        return torch.tensor(mask).to(Sconj_S.device)
+        return torch.tensor(mask.astype('float32')).to(Sconj_S.device)
 
     def compute_object(self, images_ft, psf_ft, sigma, type_filter='tophat'):
         """
@@ -645,7 +651,7 @@ class Deconvolution(object):
 
                 mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, sigma[i]) * self.mask_diffraction_th[i][None, :, :]
 
-                out_ft[i] = Sconj_I / Sconj_S
+                out_ft[i] = Sconj_I / (Sconj_S + 1e-10)
                             
                 out_filter_ft[i] = out_ft[i] * mask
             
@@ -704,11 +710,43 @@ class Deconvolution(object):
             # sigma = torch.tensor(sigma.astype('float32')).to(self.device)
 
         self.ind_object.append(id_object)        
-        self.ind_diversity.append(id_diversity)        
+        self.ind_diversity.append(id_diversity)
 
         self.frames.append(frames)
         self.sigma.append(sigma)
         self.diversity.append(diversity)
+
+        if XY is not None:
+            self.XY = XY.astype('float32')
+
+    def remove_frames(self):
+        """
+        Add frames to the deconvolution object.
+        Parameters:
+        -----------
+        frames : torch.Tensor
+            The input frames to be deconvolved (n_sequences, n_objects, n_frames, nx, ny).
+        sigma : torch.Tensor
+            The noise standard deviation for each object.
+        id_object : int, optional
+            The object index to which the frames belong (default is 0).
+        diversity : torch.Tensor, optional
+            The diversity coefficient to use for the deconvolution (n_sequences, n_objects).
+            If None, the diversity coefficient is set to zero for all objects.
+        Returns:
+        --------
+        None
+        """
+        
+        self.logger.info(f"Removing frames for all objects...")
+
+        
+        self.ind_object = []
+        self.ind_diversity = []
+
+        self.frames = []
+        self.sigma = []
+        self.diversity = []
 
         if XY is not None:
             self.XY = XY
@@ -764,6 +802,135 @@ class Deconvolution(object):
             sigma[i_obj][:, f0:f1] = self.sigma[i]
                     
         return frames, diversity, index_frames_diversity, sigma
+    
+    def update_object(self, cutoffs=None):
+        """
+        Update the object estimate with new cutoffs in the Fourier filter.
+
+        Parameters
+        ----------
+        cutoffs : list
+            A list containing the new cutoffs for each object. Each cutoff contains two numbers, indicating the
+            lower and upper frequencies for the transition.
+        """
+
+        if self.simultaneous_sequences is None:
+            self.logger.info(f"Deconvolution has not been carried out yet")
+            return
+        
+        if cutoffs is None:
+            self.logger.info(f"No cutoffs provided")
+            return
+        
+        # Recompute the diffraction masks with the new cutoffs
+        self.logger.info('Recalculating object with new cutoffs in the Fourier filter...')
+
+        for i in range(self.n_o):
+            self.cutoff[i] = cutoffs[i]
+            self.logger.info(f"     - Filter: {self.image_filter[i]} - cutoff: {self.cutoff[i]}...")
+        
+        self.compute_diffraction_masks()
+
+        n_seq, _, _, _ = self.frames_apodized[0].shape
+
+        # Split sequences in batches
+        ind = np.arange(n_seq)
+
+        n_seq_total = n_seq
+
+        # Split the sequences in groups of simultaneous sequences to be computed in parallel
+        ind = np.array_split(ind, np.ceil(n_seq / self.simultaneous_sequences))
+
+        n_sequences = len(ind)
+        
+        self.psf_seq = [None] * n_sequences        
+        self.degraded_seq = [None] * n_sequences
+        self.obj_seq = [None] * n_sequences
+        self.obj_diffraction_seq = [None] * n_sequences
+        
+        for i_seq, seq in enumerate(ind):
+                            
+            if len(seq) > 1:
+                self.logger.info(f"Processing sequences [{seq[0]+1},{seq[-1]+1}]/{n_seq_total}")
+            else:
+                self.logger.info(f"Processing sequence {seq[0]+1}/{n_seq_total}")
+
+            frames_apodized_seq = []
+            frames_ft = []
+            sigma_seq = []
+            for i in range(self.n_o):
+                frames_apodized_seq.append(self.frames_apodized[i][seq, ...].to(self.device))
+                frames_ft.append(torch.fft.fft2(self.frames_apodized[i][seq, ...]).to(self.device))
+                sigma_seq.append(self.sigma[i][seq, ...].to(self.device))
+
+            n_seq = len(seq)
+                                                            
+            psf, psf_ft = self.compute_psfs(self.modes_seq[i_seq])
+            
+            if (self.infer_object):
+
+                # Compute filtered object from the current estimate
+                if (self.config['optimization']['transform'] == 'softplus'):
+                    obj_ft = torch.fft.fft2(F.softplus(obj))
+                else:
+                    obj_ft = torch.fft.fft2(obj)
+
+                # Filter in Fourier
+                obj_filter_ft = self.fft_filter(obj_ft)                
+
+            else:
+                obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, psf_ft, sigma_seq)  
+                                   
+
+            obj_filter_diffraction = [None] * self.n_o
+            degraded = [None] * self.n_o
+            for i in range(self.n_o):                
+                obj_filter_diffraction[i] = torch.fft.ifft2(obj_filter_ft[i] * self.psf_diffraction_ft[i][None, :, :]).real
+            
+                # Compute final degraded images
+                degraded_ft = obj_filter_ft[i][:, None, :, :] * psf_ft[i]
+                degraded[i] = torch.fft.ifft2(degraded_ft).real
+                        
+            for i in range(self.n_o):
+                psf[i] = psf[i].detach()
+                degraded[i] = degraded[i].detach()
+                obj_filter[i] = obj_filter[i].detach()
+                obj_filter_diffraction[i] = obj_filter_diffraction[i].detach()
+
+# There is a memory leak here!!!!!!!!!!!!!
+            # self.psf_seq[i_seq] = psf
+            # self.degraded_seq[i_seq] = degraded
+            self.obj_seq[i_seq] = obj_filter
+            self.obj_diffraction_seq[i_seq] = obj_filter_diffraction
+
+            tfinal = time.time()
+
+            # del psf, degraded, obj_filter, obj_filter_diffraction, degraded_ft, obj_ft, obj_filter_ft, psf_ft
+        
+        # Concatenate the results from all sequences and all objects independently
+        # self.psf = [None] * self.n_o
+        # self.degraded = [None] * self.n_o
+        self.obj = [None] * self.n_o
+        self.obj_diffraction = [None] * self.n_o
+
+        # for i in range(self.n_o):
+        self.modes = torch.cat(self.modes_seq, dim=0)
+                
+        for i in range(self.n_o):
+            # tmp = [self.psf_seq[j][i] for j in range(n_sequences)]
+            # self.psf[i] = torch.cat(tmp, dim=0)
+
+            # tmp = [self.degraded_seq[j][i] for j in range(n_sequences)]
+            # self.degraded[i] = torch.cat(tmp, dim=0)
+
+            tmp = [self.obj_seq[j][i] for j in range(n_sequences)]
+            self.obj[i] = torch.cat(tmp, dim=0)
+
+            tmp = [self.obj_diffraction_seq[j][i] for j in range(n_sequences)]
+            self.obj_diffraction[i] = torch.cat(tmp, dim=0)
+        
+        return 
+
             
     def deconvolve(self,                                    
                    simultaneous_sequences=1, 
@@ -804,6 +971,9 @@ class Deconvolution(object):
         # Estimate the modes                
         # modes = self.modalnet(frames)
 
+        self.simultaneous_sequences = simultaneous_sequences
+        self.infer_object = infer_object
+
         _, self.n_f, self.n_x, self.n_y = self.frames[0].shape
 
         self.logger.info(f" *****************************************")
@@ -817,10 +987,10 @@ class Deconvolution(object):
         self.define_basis()
         
         # Fill the list of frames and apodize the frames if needed
-        for i in range(self.n_o):
-            self.frames_apodized[i] = self.frames_apodized[i].to(self.device)
-            self.diversity[i] = self.diversity[i].to(self.device)
-            self.sigma[i] = self.sigma[i].to(self.device)
+        # for i in range(self.n_o):
+        #     self.frames_apodized[i] = self.frames_apodized[i].to(self.device)
+        #     self.diversity[i] = self.diversity[i].to(self.device)
+        #     self.sigma[i] = self.sigma[i].to(self.device)
             
         self.logger.info(f"Frames")        
         for i in range(self.n_o):
@@ -832,9 +1002,7 @@ class Deconvolution(object):
             for j, ind in enumerate(self.init_frame_diversity[i]):
                 self.logger.info(f"       -> Diversity {j} = {self.diversity[i][ind]}...")
             self.logger.info(f"     - Size of frames {n_x} x {n_y}...")
-            self.logger.info(f"     - Filter: {self.image_filter[i]}...")
-            if self.image_filter[i] == 'tophat':
-                self.logger.info(f"         - Cutoff: {self.cutoff[i]}...")
+            self.logger.info(f"     - Filter: {self.image_filter[i]} - cutoff: {self.cutoff[i]}...")
                 
         self.finite_difference = util.FiniteDifference().to(self.device)
         self.set_regularizations()
@@ -866,7 +1034,7 @@ class Deconvolution(object):
 
         n_sequences = len(ind)
         
-        self.modes = [None] * n_sequences
+        self.modes_seq = [None] * n_sequences
         self.loss = [None] * n_sequences
 
         self.psf_seq = [None] * n_sequences        
@@ -895,9 +1063,9 @@ class Deconvolution(object):
             frames_ft = []
             sigma_seq = []
             for i in range(self.n_o):
-                frames_apodized_seq.append(self.frames_apodized[i][seq, ...])
-                frames_ft.append(torch.fft.fft2(self.frames_apodized[i][seq, ...]))
-                sigma_seq.append(self.sigma[i][seq, ...])
+                frames_apodized_seq.append(self.frames_apodized[i][seq, ...].to(self.device))
+                frames_ft.append(torch.fft.fft2(self.frames_apodized[i][seq, ...]).to(self.device))
+                sigma_seq.append(self.sigma[i][seq, ...].to(self.device))
 
             n_seq = len(seq)
                                                 
@@ -1097,7 +1265,7 @@ class Deconvolution(object):
                 degraded[i] = torch.fft.ifft2(degraded_ft).real
             
             # Store the results for the current set of sequences
-            self.modes[i_seq] = modes.detach()
+            self.modes_seq[i_seq] = modes_centered.detach()
             self.loss[i_seq] = losses.detach()
 
             for i in range(self.n_o):
@@ -1123,7 +1291,7 @@ class Deconvolution(object):
         self.obj_diffraction = [None] * self.n_o
 
         # for i in range(self.n_o):
-        self.modes = torch.cat(self.modes, dim=0)
+        self.modes = torch.cat(self.modes_seq, dim=0)
         self.loss = torch.cat(self.loss, dim=0)
         
         

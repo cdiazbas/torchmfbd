@@ -91,11 +91,11 @@ class ZernikeProjectionMatrix(object):
         theta_Metapupil = np.arctan2(yy_Metapupil, xx_Metapupil)
         mask_Metapupil = rho_Metapupil <= RMetapupil
                 
-        M = np.zeros((n_los, n_modes, n_modes+1))
+        M = np.zeros((n_los, n_modes, n_modes))
         
         noll_Z_metapupil = 1 + np.arange(n_modes)
         noll_Z_footprint = 1 + np.arange(n_modes)
-
+        
         for i in tqdm(range(n_modes)):
 
             n, m = zern.zernIndex(noll_Z_metapupil[i])
@@ -109,23 +109,23 @@ class ZernikeProjectionMatrix(object):
 
                 # Define the mask for the footprint
                 mask = (xx_Metapupil - xfp)**2 + (yy_Metapupil - yfp)**2 <= RTel**2
-
+                
                 if j == 0 and i == 0:
                     Z_all = []
                     Z_computed = -np.ones((n_los, n_modes+1), dtype=int)
-                
-                # Compute the xy coordinates of the footprint
-                xx_Tel = xx_Metapupil[mask] - xfp
-                yy_Tel = yy_Metapupil[mask] - yfp
-                rho_Tel = np.sqrt(xx_Tel ** 2 + yy_Tel ** 2)
-                theta_Tel = np.arctan2(yy_Tel, xx_Tel)
-                mask_Tel = rho_Tel <= RTel            
-                
+                                                
                 # Evaluate the overlap of the Zernike polynomials on the footprint and the metapupil
                 for k in range(n_modes):                
-                    if Z_computed[j, k] > 0:
+                    if Z_computed[j, k] > 0:                        
                         ZTel = Z_all[Z_computed[j, k]]
-                    else:
+                    else:                                                
+
+                        # Compute the xy coordinates of the footprint
+                        xx_Tel = xx_Metapupil[mask] - xfp
+                        yy_Tel = yy_Metapupil[mask] - yfp
+                        rho_Tel = np.sqrt(xx_Tel ** 2 + yy_Tel ** 2)
+                        theta_Tel = np.arctan2(yy_Tel, xx_Tel)
+                        mask_Tel = rho_Tel <= RTel            
                         n, m = zern.zernIndex(noll_Z_footprint[k])
                         ZTel = Z_machine.Z_nm(n, m, rho_Tel / RTel, theta_Tel, True, 'Jacobi') * mask_Tel
                         Z_all.append(ZTel)

@@ -42,20 +42,25 @@ if __name__ == '__main__':
     
     decSI.deconvolve(infer_object=False, 
                      optimizer='first', 
-                     simultaneous_sequences=16,
+                     simultaneous_sequences=90,
                      n_iterations=350)
-        
-    # modes = decSI.modes.cpu().numpy()
-    # # psf = patchify.unpatchify(decSI.psf).cpu().numpy()
-    # wavefront = decSI.wavefront.cpu().numpy()
-    # degraded = patchify.unpatchify(decSI.degraded, apodization=6).cpu().numpy()
+            
     obj = []
     for i in range(2):
-        obj.append(patchify.unpatchify(decSI.obj[i], apodization=6).cpu().numpy())        
-    # obj_diffraction = patchify.unpatchify(decSI.obj_diffraction, apodization=6).cpu().numpy()    
-    # frames = patchify.unpatchify(frames_patches).cpu().numpy()
-
-    fig, ax = pl.subplots(nrows=2, ncols=2, figsize=(10, 10))
+        obj.append(patchify.unpatchify(decSI.obj[i], apodization=6, weight_type='cosine', weight_params=30).cpu().numpy())        
+    
+    fig, ax = pl.subplots(nrows=2, ncols=3, figsize=(15, 10))
     for i in range(2):
-        ax[0, i].imshow(frames[0, i, 0, :, :])
-        ax[1, i].imshow(obj[i][0, :, :])
+        ax[i, 0].imshow(frames[0, i, 0, :, :], cmap='gray')
+        ax[i, 1].imshow(obj[i][0, :, :], cmap='gray')
+
+
+    decSI.update_object(cutoffs=[[0.3, 0.35], [0.3, 0.35]])
+
+    # Unpatchify
+    obj = []
+    for i in range(2):
+        obj.append(patchify.unpatchify(decSI.obj[i], apodization=6, weight_type='cosine', weight_params=30).cpu().numpy())        
+        
+    for i in range(2):
+        ax[i, 2].imshow(obj[i][0, :, :], cmap='gray')

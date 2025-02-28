@@ -196,3 +196,13 @@ Once the deconvolution is finished, several attributes are available in the deco
 
 The mosaicking is undone by calling the ``unpatchify`` function.
 
+Modifying filter
+----------------
+
+The cutoff frequencies of the filters can be modified after deconvolution without the need to redo the deconvolution by using:
+
+::
+
+    deconv.update_object(cutoffs=[[0.5, 0.55], [0.5, 0.65]])
+
+The cutoffs for all objects are passed as a list of lists.
