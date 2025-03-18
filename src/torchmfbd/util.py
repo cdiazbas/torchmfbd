@@ -28,12 +28,12 @@ def aperture(npix=256, cent_obs=0.0, spider=0, overfill=1.0):
     rarr = np.sqrt(np.power(xarr,2) + np.power(yarr,2))/(npix/2)
     outside = np.where(rarr > 1.0/overfill)
     inside = np.where(rarr < cent_obs)
-
+    
     illum[outside] = 0.0
     if np.any(inside[0]):
         illum[inside] = 0.0
 
-    if (spider > 0):
+    if (spider > 0):        
         start = int(npix/2 - int(spider)/2)
         illum[start:start+int(spider),:] = 0.0
         illum[:,start:start+int(spider)] = 0.0

@@ -94,7 +94,7 @@ class Basis(object):
         self.r0_max = r0_max
 
 
-    def _compute_psfs(self, modes, pupil, basis):
+    def _compute_psf(self, modes, pupil, basis):
         """Compute the PSFs and their Fourier transform from a set of modes
         
         Args:
@@ -149,7 +149,7 @@ class Basis(object):
             modes[0:n_low] *= factor
                                             
             # Compute PSF and convolve with original image
-            wavefront, psf = self._compute_psfs(modes, self.pupil, self.basis)
+            wavefront, psf = self._compute_psf(modes, self.pupil, self.basis)
 
             psf_all[:, :, i] = np.fft.fftshift(psf.cpu().numpy())
             r0_all[i] = r0
@@ -166,7 +166,7 @@ class Basis(object):
         modes = torch.tensor(modes, dtype=torch.float32).to(self.device)
                                         
         # Compute PSF and convolve with original image
-        wavefront, psf = self._compute_psfs(modes, self.pupil, self.basis)
+        wavefront, psf = self._compute_psf(modes, self.pupil, self.basis)
 
         psf_all = np.fft.fftshift(psf.cpu().numpy())            
 
@@ -208,7 +208,7 @@ class Basis(object):
             self.logger.info(f"Saving NMF file on {filename}...")
             np.savez(filename, basis=Vh, psf_diffraction=psf_diff, modes=modes, coeffs=coeffs, info=[self.wavelength, self.diameter, self.pix_size, self.central_obs])
 
-        if type == 'nmf':
+        if type == 'pca':
             self.logger.info(f"Solving PCA (be patient)...")
 
             cov = tmp @ tmp.T

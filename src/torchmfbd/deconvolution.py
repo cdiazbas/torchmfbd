@@ -195,9 +195,10 @@ class Deconvolution(object):
                 raise Exception(f"The pixel size is not small enough to model a telescope with D={self.telescope_diameter} cm")
 
             # Compute telescope aperture
+            pixel_size_pupil = self.config['telescope']['diameter'] / self.npix
             pupil = util.aperture(npix=self.npix, 
                             cent_obs = self.config['telescope']['central_obscuration'] / self.config['telescope']['diameter'], 
-                            spider=0, 
+                            spider=self.config['telescope']['spider'] / pixel_size_pupil, 
                             overfill=overfill)                
 
             # PSF model parameterized with the wavefront
@@ -679,7 +680,10 @@ class Deconvolution(object):
         torch.Tensor
             The filtered image in the frequency domain.
         """
-        out = image_ft * self.mask_diffraction_th[None, :, :, :]
+        out = [None] * self.n_o
+        for i in range(self.n_o):
+            out[i] = image_ft[i] * self.mask_diffraction_th[i][None, :, :]
+
         return out
             
     def add_frames(self, frames, sigma=None, id_object=0, id_diversity=0, diversity=0.0, XY=None):
@@ -784,7 +788,7 @@ class Deconvolution(object):
             diversity[i] = torch.zeros(n_frames_per_object[i])
             sigma[i] = torch.zeros(n_seq, n_frames_per_object[i])
             index_frames_diversity[i] = [0] * n_diversity_per_object[i]
-
+        
         for i in range(self.n_bursts):
 
             i_obj = self.ind_object[i]
@@ -1043,6 +1047,7 @@ class Deconvolution(object):
         self.obj_diffraction_seq = [None] * n_sequences
 
         tinit = time.time()
+        tinit_global = time.time()
         
         for i_seq, seq in enumerate(ind):
             
@@ -1052,7 +1057,7 @@ class Deconvolution(object):
                 deltat = tfinal - tinit
                 tinit = time.time()
                 remaining = deltat * (n_sequences - i_seq)
-                label_time = f" - Elapsed time {deltat:.2f} s - Remaining time {remaining:.2f} min ({remaining:.2f} s)"
+                label_time = f" - Elapsed time {deltat:.2f} s - Remaining time {remaining:.2f} s ({remaining:.2f} s)"
                 
             if len(seq) > 1:
                 self.logger.info(f"Processing sequences [{seq[0]+1},{seq[-1]+1}]/{n_seq_total} {label_time}")
@@ -1070,27 +1075,31 @@ class Deconvolution(object):
             n_seq = len(seq)
                                                 
             if (infer_object):
+                
+                obj_init = [None] * self.n_o
 
                 # Find frame with best contrast
-                contrast = torch.std(frames_apodized_seq, dim=(-1, -2)) / torch.mean(frames_apodized_seq, dim=(-1, -2)) * 100.0        
-                ind = torch.argsort(contrast[0, 0, :], descending=True)
-
-                if obj_in is not None:
-                    self.logger.info(f"Using provided initial object...")
-                    obj_init = obj_in
-                    obj_init = obj_init.to(self.device)
-                else:
-                    if self.config['initialization']['object'] == 'contrast':
-                        self.logger.info(f"Selecting initial object as image with best contrast...")
-                        obj_init = frames_apodized_seq[:, :, ind[0], :, :]
-                    if self.config['initialization']['object'] == 'average':
-                        self.logger.info(f"Selecting initial object as average image...")
-                        obj_init = torch.mean(frames_apodized_seq, dim=2)
+                for i in range(self.n_o):
                 
-                # Initialize the object with the inverse softplus
-                if (self.config['optimization']['transform'] == 'softplus'):
-                    obj_init = torch.log(torch.exp(obj_init) - 1.0)
-                                
+                    contrast = torch.std(frames_apodized_seq[i], dim=(-1, -2)) / torch.mean(frames_apodized_seq[i], dim=(-1, -2)) * 100.0                    
+                    ind = torch.argsort(contrast[0, :], descending=True)
+
+                    if obj_in is not None:
+                        self.logger.info(f"Using provided initial object...")
+                        obj_init[i] = obj_in
+                        obj_init[i] = obj_init.to(self.device)
+                    else:                    
+                        if self.config['initialization']['object'] == 'contrast':
+                            self.logger.info(f"Selecting initial object as image with best contrast...")
+                            obj_init[i] = frames_apodized_seq[i][:, ind[0], :, :]
+                        if self.config['initialization']['object'] == 'average':
+                            self.logger.info(f"Selecting initial object as average image...")
+                            obj_init[i] = torch.mean(frames_apodized_seq, dim=1)
+                    
+                        # Initialize the object with the inverse softplus
+                    if (self.config['optimization']['transform'] == 'softplus'):
+                        obj_init[i] = torch.log(torch.exp(obj_init[i]) - 1.0)
+            
             # Unknown modes
             if modes_in is not None:
                 self.logger.info(f"Using provided initial modes...")
@@ -1107,8 +1116,12 @@ class Deconvolution(object):
             # Second order optimizer
             if optimizer == 'second':
                 if (infer_object):
-                    obj = obj_init.clone().detach().to(self.device).requires_grad_(True)
-                    parameters = [modes, obj]
+                    parameters = [modes]
+                    obj = [None] * self.n_o
+
+                    for i in range(self.n_o):
+                        obj[i] = obj_init[i].clone().detach().to(self.device).requires_grad_(True)
+                        parameters.append(obj[i])
                 else:                
                     parameters = [modes]
 
@@ -1118,8 +1131,14 @@ class Deconvolution(object):
 
                 if (infer_object):
                     self.logger.info(f"Optimizing object and modes...")
-                    obj = obj_init.clone().detach().to(self.device).requires_grad_(True)
-                    parameters = [{'params': modes, 'lr': self.lr_modes}, {'params': obj, 'lr': self.lr_obj}]
+
+                    parameters = [{'params': modes, 'lr': self.lr_modes}]
+                    obj = [None] * self.n_o
+
+                    for i in range(self.n_o):
+                        obj[i] = obj_init[i].clone().detach().to(self.device).requires_grad_(True)
+                        parameters.append({'params': obj[i], 'lr': self.lr_obj})
+                                        
                 else:
                     self.logger.info(f"Optimizing modes only...")                
                     parameters = [{'params': modes, 'lr': self.lr_modes}]
@@ -1151,33 +1170,37 @@ class Deconvolution(object):
                 psf, psf_ft = self.compute_psfs(modes_centered[:, :, 0:n_active])
                 
                 if (infer_object):
+
+                    obj_ft = [None] * self.n_o
+                    obj_filter_ft = [None] * self.n_o
+
+                    loss_mse = torch.tensor(0.0).to(self.device)
                     
-                    # Compute filtered object from the current estimate while also clamping negative values
-                    if (self.config['optimization']['transform'] == 'softplus'):
-                        tmp = torch.clamp(F.softplus(obj), min=0.0)
-                        obj_ft = torch.fft.fft2(tmp)
-                    else:
-                        tmp = torch.clamp(obj, min=0.0)
-                        obj_ft = torch.fft.fft2(obj)
-
+                    for i in range(self.n_o):
+                        # Compute filtered object from the current estimate while also clamping negative values
+                        if (self.config['optimization']['transform'] == 'softplus'):
+                            tmp = torch.clamp(F.softplus(obj[i]), min=0.0)
+                            obj_ft[i] = torch.fft.fft2(tmp)
+                        else:
+                            tmp = torch.clamp(obj[i], min=0.0)
+                            obj_ft[i] = torch.fft.fft2(tmp)
+                    
                     # Filter in Fourier
-                    obj_filter_ft = self.fft_filter(obj_ft)                        
+                    obj_filter_ft = self.fft_filter(obj_ft)
 
-                    degraded_ft = obj_ft[:, :, None, :, :] * psf_ft
+                    for i in range(self.n_o):
 
-                    residual = self.weight[:, :, None, None, None] * (degraded_ft - frames_ft)
-                    loss_mse = torch.mean((residual * torch.conj(residual)).real) / self.npix**2
+                        degraded_ft = obj_ft[i][:, None, :, :] * psf_ft[i]
+
+                        # residual = self.weight[:, :, None, None, None] * (degraded_ft - frames_ft)
+                        residual =  (degraded_ft - frames_ft[i])
+                        loss_mse += torch.mean((residual * torch.conj(residual)).real) / self.npix**2
 
                 else:                        
 
-                    ######################!!!!!!!!!!!!!!!!!!!!!!!!!!!
-                    # We don't need to compute the object if we are not inferring it, only at the end
-                    # Compute only if you want to test contrast/minmax
-                    ######################!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
                     if self.show_object_info:
                         obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, psf_ft, sigma_seq)
-
+                    
                     loss_mse = torch.tensor(0.0).to(self.device)
 
                     # Sum over objects, frames and diversity channels
@@ -1186,11 +1209,12 @@ class Deconvolution(object):
                         t1 = torch.sum(frames_ft[i] * torch.conj(frames_ft[i]), dim=1)
                         t2 = torch.sum(torch.conj(frames_ft[i]) * psf_ft[i], dim=1)                        
                         loss_mse += torch.mean(t1 - t2 * torch.conj(t2) / Q).real / self.npix**2
-                                        
+
+                # If MOMFBD is used, then the object cannot be regularized. Look for alternatives                
                 # Object regularization
                 loss_obj = torch.tensor(0.0).to(self.device)
                 for index in self.index_regularization['object']:
-                    loss_obj += self.regularization[index](obj_filter)                        
+                    loss_obj += self.regularization[index](obj_filter)
                 
                 # Total loss
                 loss = loss_mse + loss_obj
@@ -1241,15 +1265,28 @@ class Deconvolution(object):
             psf, psf_ft = self.compute_psfs(modes_centered)
             
             if (infer_object):
-
+                
                 # Compute filtered object from the current estimate
-                if (self.config['optimization']['transform'] == 'softplus'):
-                    obj_ft = torch.fft.fft2(F.softplus(obj))
-                else:
-                    obj_ft = torch.fft.fft2(obj)
+                obj_ft = [None] * self.n_o
+                obj_filter_ft = [None] * self.n_o
+                obj_filter = [None] * self.n_o
 
+                loss_mse = torch.tensor(0.0).to(self.device)
+                
+                for i in range(self.n_o):
+                    # Compute filtered object from the current estimate while also clamping negative values
+                    if (self.config['optimization']['transform'] == 'softplus'):
+                        tmp = torch.clamp(F.softplus(obj[i]), min=0.0)
+                        obj_ft[i] = torch.fft.fft2(tmp)
+                    else:
+                        tmp = torch.clamp(obj[i], min=0.0)
+                        obj_ft[i] = torch.fft.fft2(tmp)
+                
                 # Filter in Fourier
                 obj_filter_ft = self.fft_filter(obj_ft)                
+
+                for i in range(self.n_o):
+                    obj_filter[i] = torch.fft.ifft2(obj_filter_ft[i]).real
 
             else:
                 obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, psf_ft, sigma_seq)  
@@ -1284,6 +1321,10 @@ class Deconvolution(object):
 
             # del psf, degraded, obj_filter, obj_filter_diffraction, degraded_ft, obj_ft, obj_filter_ft, psf_ft
         
+        deltat = tfinal - tinit
+        deltat_global = tfinal - tinit_global        
+        self.logger.info(f"Elapsed time {deltat:.2f} s - Total time: {deltat_global:.2f} s")
+
         # Concatenate the results from all sequences and all objects independently
         # self.psf = [None] * self.n_o
         # self.degraded = [None] * self.n_o

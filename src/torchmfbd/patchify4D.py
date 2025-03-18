@@ -30,11 +30,13 @@ class Patchify4D(object):
         self.K = patch_size
         self.S = stride_size
         self.X = self.nx
+        self.Y = self.ny
         self.D = 1.0
         
         # Compute the size of blocks that will be extracted using unfold
-        self.L = np.floor((self.X + 2*self.P - self.D*(self.K-1) - 1) / self.S + 1).astype(int)                
-
+        self.Lx = np.floor((self.X + 2*self.P - self.D*(self.K-1) - 1) / self.S + 1).astype(int)
+        self.Ly = np.floor((self.Y + 2*self.P - self.D*(self.K-1) - 1) / self.S + 1).astype(int)
+        
         # This masks is used to weight the patches when unpatchifying to allow for overlapping patches
         self.mask = torch.ones_like(x).to(x.device)
                         
@@ -98,26 +100,27 @@ class Patchify4D(object):
         xndim = x.ndim
         if xndim == 3:
             if self.flatten_sequences:
-                x = x.unsqueeze(1)
+                x2 = x.clone().unsqueeze(1)
             else:
-                x = x.unsqueeze(2)
+                x2 = x.clone().unsqueeze(2)
             mask = self.mask[:, 0:1, :, :]
         else:
+            x2 = x.clone()
             mask = self.mask
 
         mask = mask.to(x.device)
 
         if apodization > 0:
-            x = x[:, :, apodization:-apodization, apodization:-apodization]
+            x2 = x2[:, :, apodization:-apodization, apodization:-apodization]
             mask = mask[:, :, apodization:-apodization, apodization:-apodization]
 
         # Weight
         if weight_type is None:
-            npix = x.shape[-2]
+            npix = x2.shape[-2]
             self.weight = torch.ones((npix, npix)).to(x.device)
         
         if weight_type == 'gaussian':
-            npix = x.shape[-2]
+            npix = x2.shape[-2]
             xx = torch.linspace(-1, 1, npix, device=x.device)
             yy = torch.linspace(-1, 1, npix, device=x.device)
             X, Y = torch.meshgrid(xx, yy, indexing='ij')
@@ -125,7 +128,7 @@ class Patchify4D(object):
             self.weight = torch.exp(-R**2 / weight_params)
 
         if weight_type == 'cosine':
-            npix = x.shape[-2]
+            npix = x2.shape[-2]
             npix_apod = min(weight_params, npix//2)
             win = np.hanning(2*npix_apod)
             winOut = np.ones(npix)
@@ -138,28 +141,29 @@ class Patchify4D(object):
         K = self.K - 2*apodization
 
         # Compute the new size of the image
-        new_size = int((self.L - 1) * self.S + 1 - 2*self.P + self.D*(K-1))
+        new_size_x = int((self.Lx - 1) * self.S + 1 - 2*self.P + self.D*(K-1))
+        new_size_y = int((self.Ly - 1) * self.S + 1 - 2*self.P + self.D*(K-1))
                         
-        output_size = (new_size, new_size)
-
+        output_size = (new_size_x, new_size_y)
+        
         # Apply the weighting to the patches
-        x *= self.weight
+        x2 *= self.weight
         mask *= self.weight
                 
         if self.flatten_sequences:
-            x = rearrange(x, '(n L) f x y -> (n) (f x y) L', n=self.n_scans, L=self.n_patches)
+            x2 = rearrange(x2, '(n L) f x y -> (n) (f x y) L', n=self.n_scans, L=self.n_patches)
             mask = rearrange(mask, '(n L) f x y -> (n) (f x y) L', n=self.n_scans, L=self.n_patches)
         else:
-            x = rearrange(x, 'n L f x y -> (n) (f x y) L')
+            x2 = rearrange(x2, 'n L f x y -> (n) (f x y) L')
             mask = rearrange(mask, 'n L f x y -> (n) (f x y) L')
         
-        x = F.fold(x, output_size=output_size, kernel_size=K, stride=self.S)
+        x2 = F.fold(x2, output_size=output_size, kernel_size=K, stride=self.S)
         mask = F.fold(mask, output_size=output_size, kernel_size=K, stride=self.S)
 
-        x = rearrange(x, '(n) f x y -> n f x y', n=self.n_scans)
+        x2 = rearrange(x2, '(n) f x y -> n f x y', n=self.n_scans)
         mask = rearrange(mask, '(n) f x y -> n f x y', n=self.n_scans)
         
-        final = x / mask
+        final = x2 / mask
 
         if xndim == 3:
             final = final.squeeze(1)

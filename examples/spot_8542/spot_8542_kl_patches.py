@@ -13,16 +13,16 @@ if __name__ == '__main__':
 
     xy0 = [200, 200]
     lam = 7
-    npix = 512
+    npixx = 256
+    npixy = 512
     obs_file = f"spot_20200727_083509_8542_npix512_original.h5"
 
     print(f'Reading observations from {obs_file}...')
     f = h5py.File(obs_file, 'r')
-    im = f['im'][:]
-    im_d = None
+    im = f['im'][:]    
     f.close()
     
-    frames = im[:, :, :, 0:npix, 0:npix]
+    frames = im[:, :, :, 0:npixx, 0:npixy]
 
     frames /= np.mean(frames, axis=(-1, -2), keepdims=True)
 
@@ -38,12 +38,11 @@ if __name__ == '__main__':
     for i in range(2):        
         frames_patches = patchify.patchify(frames[:, i, :, :, :], patch_size=64, stride_size=50, flatten_sequences=True)
         decSI.add_frames(frames_patches, id_object=i, id_diversity=0, diversity=0.0)
-            
-    
+                
     decSI.deconvolve(infer_object=False, 
                      optimizer='first', 
                      simultaneous_sequences=90,
-                     n_iterations=350)
+                     n_iterations=150)
             
     obj = []
     for i in range(2):
@@ -64,3 +63,6 @@ if __name__ == '__main__':
         
     for i in range(2):
         ax[i, 2].imshow(obj[i][0, :, :], cmap='gray')
+
+    ax[0, 1].set_title('Reconstructed object')
+    ax[0, 2].set_title('Reconstructed object (updated cutoffs)')

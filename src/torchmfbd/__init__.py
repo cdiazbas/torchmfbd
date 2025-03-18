@@ -11,3 +11,4 @@ from .nmf import *
 from .configuration import *
 from .regularization import *
 from .util import *
+from .kl_modes import *

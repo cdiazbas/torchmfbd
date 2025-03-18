@@ -7,6 +7,9 @@ def _check_config(config):
     if "central_obscuration" not in config["telescope"]:
         config["telescope"]["central_obscuration"] = 0.0
 
+    if "spider" not in config["telescope"]:
+        config["telescope"]["spider"] = 0
+
     # Images
     if "n_pixel" not in config["images"]:
         raise ValueError("n_pixel is mandatory")

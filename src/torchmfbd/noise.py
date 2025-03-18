@@ -7,7 +7,7 @@ def compute_noise(frames):
     Parameters:
     -----------
     frames : numpy.ndarray
-        A 5D array of shape (n_scans, n_obj, n_frames, nx, ny) representing the image frames.
+        A 5D array of shape (n_scans, n_frames, nx, ny) representing the image frames.
     Returns:
     --------
     sigma : numpy.ndarray

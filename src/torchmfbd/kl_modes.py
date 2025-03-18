@@ -32,6 +32,43 @@ class KL(object):
         ch.setFormatter(formatter)
         self.logger.addHandler(ch)
 
+        self.Z_machine = ZernikeNaive(mask=[])
+
+    def kl(self, rho, theta, j):
+        """
+        Compute the KL mode j at the coordinates rho, theta
+        
+        Parameters
+        ----------
+        rho : float array
+            Radial coordinates
+        theta : float array
+            Azimuthal coordinates
+        j : int
+            Mode number
+        
+        Returns
+        -------
+        float array
+            KL mode
+        """
+
+        indx = np.where(self.noll_KL == j)[0]
+        print(indx)
+
+        KL = np.zeros_like(rho)
+
+        for i in range(len(indx)):                
+            jz = self.noll_Z[indx[i]]
+            cz = self.cz[indx[i]]
+
+            n, m = zernIndex(jz)
+            
+            Z = self.Z_machine.Z_nm(n, m, rho, theta, True, 'Jacobi')
+            KL += cz * Z
+                    
+        return KL
+
     def precalculate(self, npix_image, n_modes_max, overfill=1.0):
         """
         Precalculate KL modes. We skip the first mode, which is just the
@@ -203,18 +240,20 @@ class KL(object):
 if (__name__ == '__main__'):
 
     tmp = KL()
+
+    tmp.kl(0.5, 0.5, 2)
     
-    kl = tmp.precalculate_covariance(npix_image=128, n_modes_max=6, first_noll=2)
+    # kl = tmp.precalculate_covariance(npix_image=128, n_modes_max=6, first_noll=2)
 
-    f, ax = pl.subplots(nrows=4, ncols=4)
-    for i in range(16):
-        ax.flat[i].imshow(tmp.KL[i, :, :])
-    pl.show()
+    # f, ax = pl.subplots(nrows=4, ncols=4)
+    # for i in range(16):
+    #     ax.flat[i].imshow(tmp.KL[i, :, :])
+    # pl.show()
 
-    mat = np.zeros((20,20))
-    for i in range(20): 
-        for j in range(20): 
-            mat[i,j] = np.sum(tmp.KL[i,:,:]*tmp.KL[j,:,:])
+    # mat = np.zeros((20,20))
+    # for i in range(20): 
+    #     for j in range(20): 
+    #         mat[i,j] = np.sum(tmp.KL[i,:,:]*tmp.KL[j,:,:])
 
-    #pl.imshow(np.log(np.abs(mat)))
-    #pl.show()
+    # #pl.imshow(np.log(np.abs(mat)))
+    # #pl.show()

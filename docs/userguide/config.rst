@@ -17,6 +17,7 @@ Spatially invariant
     telescope:
         diameter: 100.0
         central_obscuration : 0.0
+        spider : 0
 
     images:
         n_pixel : 64
@@ -65,6 +66,7 @@ telescope
 
 * ``diameter``: diameter of the telescope in cm
 * ``central_obscuration`` : central obscuration of the telescope in cm
+* ``spider`` : width of the spider in cm
 
 images
 ^^^^^^
