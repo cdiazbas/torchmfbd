@@ -11,6 +11,7 @@ __pycache__/
 
 # Observations for reproducibility
 reproducibility/obs
+reproducibility/aux
 
 # Distribution / packaging
 .Python
