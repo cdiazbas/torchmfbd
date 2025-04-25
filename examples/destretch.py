@@ -14,7 +14,7 @@ if __name__ == '__main__':
     xy0 = [200, 200]
     lam = 7
     npix = 128
-    obs_file = f"obs/spot_20200727_083509_8542_npix512_original.h5"
+    obs_file = f"spot_8542/spot_20200727_083509_8542_npix512_original.h5"
 
     if (os.path.exists(obs_file)):
         print(f'Reading observations from {obs_file}...')
@@ -62,6 +62,22 @@ if __name__ == '__main__':
               reference_frame=0,
               border=6,
               n_iterations=200,
-              lambda_tt=0.01)
+              lambda_tt=0.01,
+              mode='bilinear')
     
+    warped_WB, tt = torchmfbd.destretch(frames[:, 0:1, ...],
+              ngrid=8, 
+              lr=0.50,
+              reference_frame=0,
+              border=6,
+              n_iterations=200,
+              lambda_tt=0.01,
+              mode='bilinear')
+    
+    warped_NB = torchmfbd.apply_destretch(frames[:, 1:2, ...], tt, mode='bilinear')
+    
+    
+    print("Generating movie...")
     torchmfbd.gen_movie(frames[0, 1, ...], warped[0, 1, ...], fps=8, filename='movie.mp4')
+    torchmfbd.gen_movie(frames[0, 1, ...], warped[0, 1, ...], fps=8, filename='movie2.mp4')
+    

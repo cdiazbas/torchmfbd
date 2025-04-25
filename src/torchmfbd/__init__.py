@@ -1,7 +1,7 @@
 from .deconvolution import *
 from .deconvolution_sv import *
 from .deconvolution_metapupil import *
-from .patchify5D import *
+# from .patchify5D import *
 from .patchify4D import *
 from .destretch import *
 from .noise import *

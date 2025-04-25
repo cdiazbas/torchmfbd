@@ -1,16 +1,13 @@
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
-import matplotlib.pyplot as pl
 import torchmfbd.zern as zern
 import torchmfbd.util as util
 from collections import OrderedDict
 from tqdm import tqdm
 from skimage.morphology import flood
 import scipy.ndimage as nd
-import scipy.special as sp
 from nvitop import Device
 import logging
 import torchmfbd.kl_modes as kl_modes
@@ -22,6 +19,7 @@ import pathlib
 import yaml
 import torchmfbd.configuration as configuration
 import time
+import scipy.optimize as optim
 # from pytorch_optimizer import Shampoo
 
 class Deconvolution(object):
@@ -82,37 +80,10 @@ class Deconvolution(object):
         self.npix = self.config['images']['n_pixel']
         self.npix_apod = self.config['images']['apodization_border']
 
-        # Whether to take into account the piston mode
-        self.add_piston = add_piston
-
-        # Get Noll's n order from the number of modes
-        # The summation of the modes needs to fulfill n^2+n-2*(k+1)=0 when no piston is added
-        # The summation of the modes needs to fulfill n^2+n-2*k=0 when a piston is added
-        if (add_piston):
-            self.n_modes += 1
-            a = 1.0
-            b = 1.0
-            c = -2.0 * self.n_modes
-        else:            
-            a = 1.0
-            b = 1.0
-            c = -2.0 * (self.n_modes + 1)            
-        
-        sol1 = (-b + np.sqrt(b**2 - 4*a*c))/(2*a)
-        sol2 = (-b - np.sqrt(b**2 - 4*a*c))/(2*a)
-        
-        n = 0        
-        if sol1 > 0.0 and sol1.is_integer():
-            n = int(sol1)
-        if sol2 > 0.0 and sol2.is_integer():
-            n = int(sol2)
-        
-        if n == 0:
-            raise Exception(f"Number of modes {self.n_modes} do not cover a full radial degree")
-
-        self.noll_max = n
-        
         self.psf_model = self.config['psf']['model']
+
+        # Whether to take into account the piston mode
+        self.add_piston = add_piston                     
                 
         # Generate Hamming window function for WFS correlation
         if (self.npix_apod > 0):
@@ -154,7 +125,39 @@ class Deconvolution(object):
         self.simultaneous_sequences = None
         self.infer_object = None
        
-    def define_basis(self):
+    def define_basis(self, n_modes=None):
+
+        if n_modes is not None:
+            self.n_modes = n_modes
+
+        if self.psf_model.lower() in ['zernike', 'kl']:
+            
+            # Get Noll's n order from the number of modes
+            # The summation of the modes needs to fulfill n^2+n-2*(k+1)=0 when no piston is added
+            # The summation of the modes needs to fulfill n^2+n-2*k=0 when a piston is added            
+            if (self.add_piston):
+                self.n_modes += 1
+                a = 1.0
+                b = 1.0
+                c = -2.0 * self.n_modes
+            else:            
+                a = 1.0
+                b = 1.0
+                c = -2.0 * (self.n_modes + 1)            
+            
+            sol1 = (-b + np.sqrt(b**2 - 4*a*c))/(2*a)
+            sol2 = (-b - np.sqrt(b**2 - 4*a*c))/(2*a)
+            
+            n = 0        
+            if sol1 > 0.0 and sol1.is_integer():
+                n = int(sol1)
+            if sol2 > 0.0 and sol2.is_integer():
+                n = int(sol2)
+            
+            if n == 0:
+                raise Exception(f"Number of modes {self.n_modes} do not cover a full radial degree")
+
+            self.noll_max = n   
 
         self.pupil = [None] * self.n_o
         self.basis = [None] * self.n_o
@@ -199,19 +202,19 @@ class Deconvolution(object):
             pupil = util.aperture(npix=self.npix, 
                             cent_obs = self.config['telescope']['central_obscuration'] / self.config['telescope']['diameter'], 
                             spider=self.config['telescope']['spider'] / pixel_size_pupil, 
-                            overfill=overfill)                
-
+                            overfill=overfill)             
+            
             # PSF model parameterized with the wavefront
-            if (self.psf_model.lower() in ['zernike', 'kl']):
-                
-                self.logger.info(f"PSF model: wavefront expansion")
-
-                if (self.psf_model.lower() not in ['zernike', 'kl']):
+            if (self.psf_model.lower() in ['zernike', 'kl', 'nmf']):
+                            
+                if (self.psf_model.lower() not in ['zernike', 'kl', 'nmf']):
                     raise Exception(f"Unknown basis {self.basis}. Use 'zernike' or 'kl' for wavefront expansion")
             
                 if (self.psf_model.lower() == 'zernike'):
+
+                    self.logger.info(f"PSF model: wavefront expansion in Zernike modes")
                     
-                    found, filename = self.find_basis_wavefront('zernike', self.config['psf']['nmax_modes'], int(wavelength))
+                    found, filename = self.find_basis_wavefront('zernike', self.n_modes, int(wavelength))
 
                     # Define Zernike modes        
                     if found:
@@ -231,7 +234,9 @@ class Deconvolution(object):
 
                 if (self.psf_model.lower() == 'kl'):
 
-                    found, filename = self.find_basis_wavefront('kl', self.config['psf']['nmax_modes'], int(wavelength))
+                    self.logger.info(f"PSF model: wavefront expansion in KL modes")
+
+                    found, filename = self.find_basis_wavefront('kl', self.n_modes, int(wavelength))
 
                     if found:
                         self.logger.info(f"Loading precomputed KL basis: {filename}")
@@ -245,23 +250,37 @@ class Deconvolution(object):
                                         n_modes_max = self.n_modes,                                 
                                         overfill=overfill)
                         
-                        # Add piston mode if needed
+                        # Add piston mode if needed                        
                         if (self.add_piston):
                             basis = np.concatenate([pupil * np.ones((1, self.npix, self.npix)), basis[0:self.n_modes, :, :]], axis=0)
                             self.n_modes += 1
 
                         np.savez(f"{filename}", basis=basis, variance=self.kl.varKL)
                 
+                if (self.psf_model.lower() == 'nmf'):
+                    
+                    self.logger.info(f"PSF model: PSF expansion in NMF modes")
+
+                    self.logger.info(f"Loading precomputed NMF basis: {self.config['psf']['filename']}")
+                    f = np.load(self.config['psf']['filename'])
+
+                    n_psf = int(np.sqrt(f['basis'].shape[1]))
+
+                    basis = f['basis'][0:self.n_modes, :].reshape((self.n_modes, n_psf, n_psf))
+
+                    basis = basis[:, n_psf//2 - self.npix//2:n_psf//2 + self.npix//2, n_psf//2 - self.npix//2:n_psf//2 + self.npix//2]
+                    
                 pupil = torch.tensor(pupil.astype('float32')).to(self.device)
                 basis = torch.tensor(basis[0:self.n_modes, :, :].astype('float32')).to(self.device)
 
                 # Following van Noort et al. (2005) we normalize the basis to the maximum wavelength
                 # so that the wavefront is given in radians
-                basis /= normalized_wavelengths[i]
+                if (self.psf_model.lower() in ['zernike', 'kl']):
+                    basis /= normalized_wavelengths[i]
 
                 if (self.add_piston):
                     self.logger.info(f"Adding piston mode...")
-                self.logger.info(f"Wavefront")                        
+                
                 self.logger.info(f"  * Using {self.n_modes} modes...")
                 
                     
@@ -511,7 +530,7 @@ class Deconvolution(object):
             # Shifted mask used for the Lofdahl & Scharmer filter
             self.mask_diffraction_shift[i] = np.fft.fftshift(self.mask_diffraction[i])                
                      
-    def compute_psfs(self, modes):
+    def compute_psfs(self, modes, diversity):
         """
         Compute the Point Spread Functions (PSFs) from the given modes.
         Parameters:
@@ -524,20 +543,19 @@ class Deconvolution(object):
         """
         
 
-        n_active = modes.shape[2]
+        _, n_f, n_active = modes.shape
                                         
         psf_norm = [None] * self.n_o
         psf_ft = [None] * self.n_o
         
-        for i in range(self.n_o):
-
+        for i in range(self.n_o):            
             # Compute wavefronts from estimated modes                
             wavefront = torch.einsum('ijk,klm->ijlm', modes, self.basis[i][0:n_active, :, :])
             
             # Reuse the same wavefront per object but add the diversity
             wavef = []
-            for j in range(len(self.init_frame_diversity[i])):
-                div = self.diversity[i][j] * self.basis[i][2, :, :][None, None, :, :]
+            for j in self.init_frame_diversity[i]:                
+                div = diversity[i][:, j:j+n_f, None, None] * self.basis[i][2, :, :][None, None, :, :]
                 wavef.append(wavefront + div)
             
             wavef = torch.cat(wavef, dim=1)
@@ -549,6 +567,38 @@ class Deconvolution(object):
             ft = torch.fft.fft2(phase)
             psf = (torch.conj(ft) * ft).real
             
+            # Normalize PSF        
+            psf_norm[i] = psf / torch.sum(psf, [-1, -2], keepdim=True)
+
+            # FFT of the PSF
+            psf_ft[i] = torch.fft.fft2(psf_norm[i])
+        
+        return psf_norm, psf_ft
+    
+    def compute_psfs_nmf(self, modes):
+        """
+        Compute the Point Spread Functions (PSFs) from the given modes.
+        Parameters:
+        modes (torch.Tensor): A tensor of shape (batch_size, num_modes, height, width) representing the modes.
+        Returns:
+        tuple: A tuple containing:
+            - wavefront (torch.Tensor): The computed wavefronts from the estimated modes.
+            - psf_norm (torch.Tensor): The normalized PSFs.
+            - psf_ft (torch.Tensor): The FFT of the normalized PSFs.
+        """
+                
+        n_active = modes.shape[2]
+                                        
+        psf_norm = [None] * self.n_o
+        psf_ft = [None] * self.n_o
+        
+        for i in range(self.n_o):
+
+            # Compute PSF from estimated modes                
+            psf = torch.einsum('ijk,klm->ijlm', modes, self.basis[i][0:n_active, :, :])
+
+            psf = torch.fft.fftshift(psf, dim=[-2, -1])
+                        
             # Normalize PSF        
             psf_norm[i] = psf / torch.sum(psf, [-1, -2], keepdim=True)
 
@@ -718,10 +768,19 @@ class Deconvolution(object):
 
         self.frames.append(frames)
         self.sigma.append(sigma)
+
+        # If diversity is a scalar, we need to create a tensor of the same size as the number
+        # of sequences
+        if np.isscalar(diversity):
+            diversity = torch.full(frames.shape[0:1], diversity, dtype=torch.float32).to(self.device)
+                
         self.diversity.append(diversity)
 
         if XY is not None:
-            self.XY = XY.astype('float32')
+            if not torch.is_tensor(XY):
+                self.XY = XY.astype('float32')
+            else:
+                self.XY = XY
 
     def remove_frames(self):
         """
@@ -765,6 +824,7 @@ class Deconvolution(object):
         """
 
         self.logger.info(f"Setting up frames...")
+
         # Get number of objects and number of diversity channels from the added frames
         self.n_bursts = len(self.ind_object)
         self.n_o = max(self.ind_object) + 1
@@ -785,7 +845,7 @@ class Deconvolution(object):
         
         for i in range(self.n_o):
             frames[i] = torch.zeros(n_seq, n_frames_per_object[i], n_x, n_y)
-            diversity[i] = torch.zeros(n_frames_per_object[i])
+            diversity[i] = torch.zeros(n_seq, n_frames_per_object[i])
             sigma[i] = torch.zeros(n_seq, n_frames_per_object[i])
             index_frames_diversity[i] = [0] * n_diversity_per_object[i]
         
@@ -801,7 +861,8 @@ class Deconvolution(object):
 
             frames[i_obj][:, f0:f1, :, :] = util.apodize(self.frames[i], self.window)
 
-            diversity[i_obj][f0:f1] = self.diversity[i]
+            # Set the diversity for the current object for all frames and for the sequence            
+            diversity[i_obj][:, f0:f1] = self.diversity[i][:, None].expand(-1, n_f)
             
             sigma[i_obj][:, f0:f1] = self.sigma[i]
                     
@@ -862,14 +923,16 @@ class Deconvolution(object):
             frames_apodized_seq = []
             frames_ft = []
             sigma_seq = []
+            diversity_seq = []
             for i in range(self.n_o):
                 frames_apodized_seq.append(self.frames_apodized[i][seq, ...].to(self.device))
                 frames_ft.append(torch.fft.fft2(self.frames_apodized[i][seq, ...]).to(self.device))
                 sigma_seq.append(self.sigma[i][seq, ...].to(self.device))
-
+                diversity_seq.append(self.diversity[i][seq, ...].to(self.device))
+                
             n_seq = len(seq)
                                                             
-            psf, psf_ft = self.compute_psfs(self.modes_seq[i_seq])
+            psf, psf_ft = self.compute_psfs(self.modes_seq[i_seq], diversity_seq)
             
             if (self.infer_object):
 
@@ -1004,7 +1067,7 @@ class Deconvolution(object):
             self.logger.info(f"     - Number of frames {n_f}...")
             self.logger.info(f"     - Number of diversity channels {len(self.init_frame_diversity[i])}...")
             for j, ind in enumerate(self.init_frame_diversity[i]):
-                self.logger.info(f"       -> Diversity {j} = {self.diversity[i][ind]}...")
+                self.logger.info(f"       -> Diversity {j} = {self.diversity[i][0, ind]}...")
             self.logger.info(f"     - Size of frames {n_x} x {n_y}...")
             self.logger.info(f"     - Filter: {self.image_filter[i]} - cutoff: {self.cutoff[i]}...")
                 
@@ -1014,8 +1077,15 @@ class Deconvolution(object):
         # Compute the diffraction masks
         self.compute_diffraction_masks()
         
-        # Annealing schedules                
-        modes = np.cumsum(np.arange(2, self.noll_max+1))
+        # Annealing schedules
+
+        if self.psf_model.lower() in ['zernike', 'kl']:
+            modes = np.cumsum(np.arange(2, self.noll_max+1))
+
+        if self.psf_model.lower() == 'nmf':
+            n = (self.n_modes - 2) // 5
+            modes = np.linspace(2, self.n_modes, n).astype(int)
+        
         self.anneal = self.compute_annealing(modes, n_iterations)
                 
         # If the regularization parameter is a scalar, we assume that it is the same for all objects
@@ -1048,6 +1118,10 @@ class Deconvolution(object):
 
         tinit = time.time()
         tinit_global = time.time()
+
+        self.total_time_convergence = 0.0
+
+        self.psf_diffraction, self.psf_diffraction_ft = self.compute_psf_diffraction()
         
         for i_seq, seq in enumerate(ind):
             
@@ -1067,10 +1141,12 @@ class Deconvolution(object):
             frames_apodized_seq = []
             frames_ft = []
             sigma_seq = []
+            diversity_seq = []
             for i in range(self.n_o):
                 frames_apodized_seq.append(self.frames_apodized[i][seq, ...].to(self.device))
                 frames_ft.append(torch.fft.fft2(self.frames_apodized[i][seq, ...]).to(self.device))
                 sigma_seq.append(self.sigma[i][seq, ...].to(self.device))
+                diversity_seq.append(self.diversity[i][seq, ...].to(self.device))
 
             n_seq = len(seq)
                                                 
@@ -1105,14 +1181,20 @@ class Deconvolution(object):
                 self.logger.info(f"Using provided initial modes...")
                 modes = modes_in.clone().detach().to(self.device).requires_grad_(True)
             else:
-                if self.config['initialization']['modes_std'] == 0:
-                    self.logger.info(f"Initializing modes with zeros...")
-                    modes = torch.zeros((n_seq, self.n_f, self.n_modes), device=self.device, requires_grad=True)
-                else:
-                    self.logger.info(f"Initializing modes with random values with standard deviation {self.config['initialization']['modes_std']}")
-                    modes = self.config['initialization']['modes_std'] * torch.randn((n_seq, self.n_f, self.n_modes))
+                if self.psf_model.lower() in ['zernike', 'kl']:
+                    if self.config['initialization']['modes_std'] == 0:
+                        self.logger.info(f"Initializing modes with zeros...")
+                        modes = torch.zeros((n_seq, self.n_f, self.n_modes), device=self.device, requires_grad=True)
+                    else:
+                        self.logger.info(f"Initializing modes with random values with standard deviation {self.config['initialization']['modes_std']}")
+                        modes = self.config['initialization']['modes_std'] * torch.randn((n_seq, self.n_f, self.n_modes))
+                        modes = modes.clone().detach().to(self.device).requires_grad_(True)
+                
+                if self.psf_model.lower() == 'nmf':                               
+                    tmp, _ = optim.nnls(self.basis[0].reshape((self.n_modes, self.npix**2)).T.cpu().numpy(), self.psf_diffraction[0].flatten().cpu().numpy())
+                    modes = torch.tensor(tmp[None, None, :].astype('float32')).expand((n_seq, self.n_f, self.n_modes))
                     modes = modes.clone().detach().to(self.device).requires_grad_(True)
-
+                    
             # Second order optimizer
             if optimizer == 'second':
                 if (infer_object):
@@ -1152,22 +1234,31 @@ class Deconvolution(object):
 
             t = tqdm(range(n_iterations))
 
-            _, self.psf_diffraction_ft = self.compute_psf_diffraction()
-
-            n_active = 2
+            if self.psf_model.lower() in ['zernike', 'kl']:            
+                n_active = 2
+            
+            if self.psf_model.lower() == 'nmf':
+                n_active = self.n_modes
 
             modes_previous = modes.clone().detach()
+
+            self.t0_convergence = time.time()
                 
             for loop in t:
                             
                 opt.zero_grad(set_to_none=True)
+
+                if self.psf_model.lower() in ['zernike', 'kl']:
             
-                # Compute PSF from current wavefront coefficients and reference 
-                modes_centered = modes.clone()
-                modes_centered[:, :, 0:2] = modes_centered[:, :, 0:2] - modes[:, 0:1, 0:2]
-                            
-                # modes -> (n_seq, n_f, self.n_modes)                    
-                psf, psf_ft = self.compute_psfs(modes_centered[:, :, 0:n_active])
+                    # Compute PSF from current wavefront coefficients and reference 
+                    modes_centered = modes.clone()
+                    modes_centered[:, :, 0:2] = modes_centered[:, :, 0:2] - modes[:, 0:1, 0:2]
+                                
+                    # modes -> (n_seq, n_f, self.n_modes)
+                    psf, psf_ft = self.compute_psfs(modes_centered[:, :, 0:n_active], diversity_seq)
+                
+                if self.psf_model.lower() == 'nmf':
+                    psf, psf_ft = self.compute_psfs_nmf(modes[:, :, 0:n_active])
                 
                 if (infer_object):
 
@@ -1258,11 +1349,20 @@ class Deconvolution(object):
                 tmp['L'] = f'{loss.detach().item():7.4f}'
                 t.set_postfix(ordered_dict=tmp)
 
-                n_active = self.anneal[loop]    
-                        
-            modes_centered = modes.clone().detach()
-            modes_centered[:, :, 0:2] = modes_centered[:, :, 0:2] - modes_centered[:, 0:1, 0:2]
-            psf, psf_ft = self.compute_psfs(modes_centered)
+                n_active = self.anneal[loop]
+
+            self.tf_convergence = time.time()
+
+            self.total_time_convergence += self.tf_convergence - self.t0_convergence
+            
+            if self.psf_model.lower() in ['zernike', 'kl']:
+                modes_centered = modes.clone().detach()
+                modes_centered[:, :, 0:2] = modes_centered[:, :, 0:2] - modes_centered[:, 0:1, 0:2]
+                psf, psf_ft = self.compute_psfs(modes_centered, diversity_seq)
+            
+            if self.psf_model.lower() == 'nmf':
+                psf, psf_ft = self.compute_psfs_nmf(modes)
+
             
             if (infer_object):
                 
@@ -1302,7 +1402,7 @@ class Deconvolution(object):
                 degraded[i] = torch.fft.ifft2(degraded_ft).real
             
             # Store the results for the current set of sequences
-            self.modes_seq[i_seq] = modes_centered.detach()
+            self.modes_seq[i_seq] = modes.detach()
             self.loss[i_seq] = losses.detach()
 
             for i in range(self.n_o):
@@ -1323,6 +1423,8 @@ class Deconvolution(object):
         
         deltat = tfinal - tinit
         deltat_global = tfinal - tinit_global        
+        self.total_time = deltat_global        
+        self.total_mem = self.handle.memory_used() / 1024**2
         self.logger.info(f"Elapsed time {deltat:.2f} s - Total time: {deltat_global:.2f} s")
 
         # Concatenate the results from all sequences and all objects independently

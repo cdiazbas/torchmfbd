@@ -3,45 +3,38 @@ telescope:
     central_obscuration : 0.0
 
 images:
-    n_pixel : 256
-    wavelength : 8542.0
+    n_pixel : 64    
     pix_size : 0.059
     apodization_border : 6
 
 object1:
     wavelength : 8542.0
     image_filter: tophat
-    cutoff : [0.75, 0.75]
+    cutoff : [0.65, 0.70]
 
 object2:
     wavelength : 8542.0
     image_filter: tophat
-    cutoff : [0.75, 0.75]
-        
+    cutoff : [0.65, 0.70]
+    
 optimization:
     gpu : 0
     transform : softplus
-    softplus_scale : 1000.0    
+    softplus_scale : 1.0    
     lr_obj : 0.02
     lr_modes : 0.08
-    lr_tt : 0.003
+    show_object_info: False
 
 regularization:
-    smooth1:
-        variable: tiptilt
-        lambda: 0.01
-    smooth2:
-        variable: modes
-        lambda: 0.01
-    iuwt1:
+     iuwt1:
         variable : object
-        lambda : 0.0003
+        lambda : 0.0
         nbands : 5
 
 psf:
-    model : nmf        
+    model : nmf    
     nmax_modes : 150
-    filename: '../basis/nmf_8542_n_150_r0_5_30.npz'
+    filename: '../spot_sv_8542/basis/nmf_8542_n_150_r0_5_30.npz'
     ngrid_modes: 8
 
 initialization:
@@ -49,6 +42,6 @@ initialization:
     modes_std : 0.0
 
 annealing:
-    type: none
+    type: linear
     start_pct : 0.0
     end_pct : 0.85

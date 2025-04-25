@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 import torchmfbd.az_average as az_average
+import scipy.stats as stats
 
 __all__ = ['aperture', 'psf_scale', 'apodize', 'azimuthal_power']
 
@@ -126,7 +127,7 @@ def azimuthal_power_old(self, image):
     k, power = az_average.power_spectrum(image)
     return 1.0/(freq_az * self.cutoff), power
 
-def azimuthal_power(image, d=1):
+def azimuthal_power_old2(image, d=1):
 
     n = image.shape[0] // 2
     f = np.fft.fft2(image)
@@ -135,7 +136,7 @@ def azimuthal_power(image, d=1):
 
     freq = np.fft.fftfreq(image.shape[0], d=d)
         
-    k, pow1d = azimuthalAverage(power, returnradii=True)
+    k, pow1d = az_average.azimuthalAverage(power, returnradii=True)
 
     ind = np.where(k < n)
     k = k[ind]
@@ -145,3 +146,60 @@ def azimuthal_power(image, d=1):
         
     return k, pow1d
 
+def azimuthal_power(image, d=1, apodization=None):
+
+    npix = image.shape[0]
+
+    if apodization is not None:
+        win = np.hanning(2*apodization)
+        winOut = np.ones(npix)
+        winOut[0:apodization] = win[0:apodization]
+        winOut[-apodization:] = win[-apodization:]
+        window = np.outer(winOut, winOut)
+        mn = np.mean(image)
+        image -= mn
+        image *= window
+        image += mn
+        
+    fourier_image = np.fft.fft2(image)
+    fourier_amplitudes = np.abs(fourier_image)**2
+
+    kfreq = np.fft.fftfreq(npix) * npix
+    kfreq2D = np.meshgrid(kfreq, kfreq)
+    knrm = np.sqrt(kfreq2D[0]**2 + kfreq2D[1]**2)
+
+    knrm = knrm.flatten()
+    fourier_amplitudes = fourier_amplitudes.flatten()
+
+    kbins = np.arange(0.5, npix//2+1, 1.)
+    kvals = 0.5 * (kbins[1:] + kbins[:-1])
+    Abins, _, _ = stats.binned_statistic(knrm, fourier_amplitudes,
+                                        statistic = "mean",
+                                        bins = kbins)
+
+    return kvals / npix, Abins
+
+def num_modes_height(z, n_modes_0, r00, r0z, D, afov):
+    """
+    Calculate the number of modes as a function of height.
+
+    This function computes the ratio of the number of modes at a given height 
+    based on the Fried parameter (r0) and the aperture diameter (D), taking 
+    into account the angular field of view (afov).
+
+    Parameters:
+        z (array-like): The height values at which the number of modes is to be calculated in km.
+        n_modes_0 (float): The number of modes at the reference height.
+        r00 (float): The Fried parameter at the reference height in cm.
+        r0z (array-like): The Fried parameter values at different heights in cm.
+        D (float): The aperture diameter in cm.
+        afov (float): The angular field of view in arcsec
+
+    Returns:
+        array-like: The ratio of the number of modes at different heights 
+        relative to the reference height.
+    """
+    afov = afov / 206265.0    
+    z *= 1e5
+    ratio = (r00 / r0z)**2 * (1.0 + (z * np.sin(afov)) / D)**2
+    return ratio * n_modes_0

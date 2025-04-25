@@ -34,7 +34,7 @@ be defined in the code as a dictionary:
     object1:
         wavelength: 5250.0
         image_filter: tophat
-        cutoff: 0.75
+        cutoff: [0.75, 0.80]
 
     optimization:
         gpu : 0

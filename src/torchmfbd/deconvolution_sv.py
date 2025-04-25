@@ -371,7 +371,7 @@ class DeconvolutionSV(Deconvolution):
             self.logger.info(f"     - Size of frames {n_x} x {n_y}...")
                 
         self.finite_difference = util.FiniteDifference().to(self.device)
-        self.add_regularization()
+        self.set_regularizations()
 
         # Compute the diffraction masks
         self.compute_diffraction_masks()
@@ -517,9 +517,10 @@ class DeconvolutionSV(Deconvolution):
                                                                              modes_infer[:, ind, ...],
                                                                              infer_tiptilt, 
                                                                              infer_modes,
-                                                                             i)                                        
+                                                                             i)
+                                                
                         # Compute the MSE loss                        
-                        loss_mse += torch.mean(weight_seq[i][:, :, None, None] * (syn - frames_apodized_seq[i][:, ind, :, :])**2)
+                        loss_mse += torch.mean(weight_seq[i][:, ind, None, None] * (syn - frames_apodized_seq[i][:, ind, :, :])**2)
                 
                 # Regularization
                 # Tip-tilt regularization                

@@ -43,8 +43,10 @@ class DeconvolutionMetapupils(Deconvolution):
         if 'atmosphere' not in self.config:
             raise ValueError("atmosphere is mandatory in metapupils")
         self.heights = self.config['atmosphere']['heights']
+
+        self.n_modes_height = self.n_modes
                             
-    def compute_psfs(self, modes, M):
+    def compute_psfs(self, modes, n_active, M, diversity):
         """
         Compute the Point Spread Functions (PSFs) from the given modes.
         Parameters:
@@ -56,26 +58,40 @@ class DeconvolutionMetapupils(Deconvolution):
             - psf_norm (torch.Tensor): The normalized PSFs.
             - psf_ft (torch.Tensor): The FFT of the normalized PSFs.
         """
-        
-
-        n_active = modes.shape[2]
+                
+        n_f = modes[0].shape[1]
                                         
         psf_norm = [None] * self.n_o
-        psf_ft = [None] * self.n_o
+        psf_ft = [None] * self.n_o        
                 
         for i in range(self.n_o):
 
             # Compute the projection of the metapupils on the footprints at all heights by multiplying by the
             # projection matrix and sum over all heights                  
-            modes_directions = torch.einsum('mikn,ijk->mjn', M[i][:, :, 0:n_active, 0:n_active], modes)
-            
-            # Compute wavefronts from estimated modes            
-            wavefront = torch.einsum('ijk,klm->ijlm', modes_directions, self.basis[i][0:n_active, :, :])
-            
+                        
+            for j in range(self.n_heights):
+                # if j == 0:                    
+                    # modes_directions = torch.einsum('ijk,mj->imk', M[i][j][:, 0:n_active, 0:n_active], modes[j][:, 0:n_active])
+                # else:
+                    # modes_directions += torch.einsum('ijk,mj->imk', M[i][j][:, 0:n_active, 0:n_active], modes[j][:, 0:n_active])
+
+                n_active_height = min(n_active, self.n_modes_height[j])
+                
+                if j == 0:
+                    modes_directions = torch.einsum('ijk,mj->imk', M[i][j][:, 0:n_active_height, 0:n_active_height], modes[j][:, 0:n_active_height])
+                    
+                    # Compute wavefronts from estimated modes                                
+                    wavefront = torch.einsum('ijk,klm->ijlm', modes_directions, self.basis_meta[j][i][0:n_active_height, :, :])
+                else:                    
+                    modes_directions = torch.einsum('ijk,mj->imk', M[i][j][:, 0:n_active_height, 0:n_active_height], modes[j][:, 0:n_active_height])
+
+                    # Compute wavefronts from estimated modes            
+                    wavefront += torch.einsum('ijk,klm->ijlm', modes_directions, self.basis_meta[j][i][0:n_active_height, :, :])
+                                    
             # Reuse the same wavefront per object but add the diversity
             wavef = []
-            for j in range(len(self.init_frame_diversity[i])):
-                div = self.diversity[i][j] * self.basis[i][2, :, :][None, None, :, :]
+            for j in range(len(self.init_frame_diversity[i])):                
+                div = diversity[i][:, j:j+n_f, None, None] * self.basis[i][2, :, :][None, None, :, :]
                 wavef.append(wavefront + div)
             
             wavef = torch.cat(wavef, dim=1)
@@ -95,39 +111,53 @@ class DeconvolutionMetapupils(Deconvolution):
         
         return psf_norm, psf_ft
     
+        
+    
     def define_metapupils(self):
         
         self.n_heights = len(self.heights)
         self.DMetapupil = np.zeros(self.n_heights)
 
-        self.logger.info(f"Atmosphere")
+        self.pupil_meta = [None] * self.n_heights
+        self.basis_meta = [None] * self.n_heights
+
         self.projection_matrices = []
         zernike_projection = projection.ZernikeProjectionMatrix()
 
         for i, h in enumerate(self.heights):
-            self.logger.info(f"  * Layer {i} at {h} km")            
+            self.logger.info(f"*** Layer {i} at {h} km")            
+
+            # We need to take piston into account always
+            n_modes = self.n_modes_height[i]
+            self.define_basis(n_modes)
+            self.pupil_meta[i] = self.pupil
+            self.basis_meta[i] = self.basis
+
+            self.logger.info(f"Projection matrix")
+        
             M, DMetapupil = zernike_projection.zernikeProjectionMatrix(self.n_modes, 
                                                    self.XY.cpu().numpy(), 
                                                    self.config['telescope']['diameter'] / 100, 
                                                    h,
                                                    cm_per_pix=5.0)            
             self.DMetapupil[i] = DMetapupil
-            self.projection_matrices.append(M[:, None, :, :])        
 
-        self.projection_matrices = np.concatenate(self.projection_matrices, axis=1)
-        self.projection_matrices = torch.tensor(self.projection_matrices, device=self.device, dtype=torch.float32)
-
+            M = torch.tensor(M.astype('float32'), device=self.device)
+            self.projection_matrices.append(M)
+        
         # We need to add the piston mode to the basis
-        self.logger.info(f"Including piston mode...")
-        for i in range(self.n_o):
-            piston = torch.ones(1, self.npix, self.npix).to(self.device) * self.pupil[i]
-            self.basis[i] = torch.cat([piston, self.basis[i]], dim=0)
+        # self.logger.info(f"Including piston mode...")
+
+        # for i, h in enumerate(self.heights):
+        #     for j in range(self.n_o):
+        #         piston = torch.ones(1, self.npix, self.npix).to(self.device) * self.pupil_meta[i][j]
+        #         self.basis_meta[i][j] = torch.cat([piston, self.basis_meta[i][j]], dim=0)
 
     def plot_metapupils(self):
         zernike_projection = projection.ZernikeProjectionMatrix()
         zernike_projection.plotMetapupils(self.XY.cpu().numpy(),
                                           self.config['telescope']['diameter'] / 100, 
-                                          self.heights)
+                                          self.heights)                   
             
     def deconvolve(self,                   
                    simultaneous_sequences=1, 
@@ -169,12 +199,10 @@ class DeconvolutionMetapupils(Deconvolution):
 
         # Combine all frames
         self.frames_apodized, self.diversity, self.init_frame_diversity, self.sigma = self.combine_frames()
-
-        # Define all basis
-        self.define_basis()
-
-        # Define metapupils
+        
+        # Define metapupils and associated basis according to the number of modes
         self.define_metapupils()
+
         
         # Fill the list of frames and apodize the frames if needed
         for i in range(self.n_o):
@@ -190,11 +218,9 @@ class DeconvolutionMetapupils(Deconvolution):
             self.logger.info(f"     - Number of frames {n_f}...")
             self.logger.info(f"     - Number of diversity channels {len(self.init_frame_diversity[i])}...")
             for j, ind in enumerate(self.init_frame_diversity[i]):
-                self.logger.info(f"       -> Diversity {j} = {self.diversity[i][ind]}...")
+                self.logger.info(f"       -> Diversity {j} = {self.diversity[i][0, ind]}...")
             self.logger.info(f"     - Size of frames {n_x} x {n_y}...")
-            self.logger.info(f"     - Filter: {self.image_filter[i]}...")
-            if self.image_filter[i] == 'tophat':
-                self.logger.info(f"         - Cutoff: {self.cutoff[i]}...")
+            self.logger.info(f"     - Filter: {self.image_filter[i]} - cutoff: {self.cutoff[i]}...")
                 
         self.finite_difference = util.FiniteDifference().to(self.device)
         self.set_regularizations()
@@ -219,11 +245,18 @@ class DeconvolutionMetapupils(Deconvolution):
         else:
             if self.config['initialization']['modes_std'] == 0:
                 self.logger.info(f"Initializing modes with zeros...")
-                modes = torch.zeros((self.n_heights, self.n_f, self.n_modes), device=self.device, requires_grad=True)
+                modes = []
+                for i in range(self.n_heights):
+
+                    # Always add piston mode
+                    modes.append(torch.zeros((self.n_f, self.n_modes_height[i]+1), device=self.device, requires_grad=True))                
             else:
                 self.logger.info(f"Initializing modes with random values with standard deviation {self.config['initialization']['modes_std']}")
-                modes = self.config['initialization']['modes_std'] * torch.randn((self.n_heights, self.n_f, self.n_modes))
-                modes = modes.clone().detach().to(self.device).requires_grad_(True)
+
+                modes = []
+                for i in range(self.n_heights):
+                    tmp = self.config['initialization']['modes_std'] * torch.randn((self.n_f, self.n_modes_height[i]+1))
+                    modes.append(tmp.clone().detach().to(self.device).requires_grad_(True))
 
         # first order/Second order optimizer
         parameters = [{'params': modes, 'lr': self.lr_modes}]
@@ -238,7 +271,6 @@ class DeconvolutionMetapupils(Deconvolution):
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, 3*n_iterations)
 
         losses = torch.zeros(n_iterations, device=self.device)
-        contrasts = torch.zeros(n_iterations, device=self.device)
 
         t = tqdm(range(n_iterations))
 
@@ -248,8 +280,6 @@ class DeconvolutionMetapupils(Deconvolution):
         
         # Split sequences in batches
         ind = np.arange(n_seq)
-
-        n_seq_total = n_seq
 
         # Split the sequences in groups of simultaneous sequences to be computed in parallel
         ind = np.array_split(ind, np.ceil(n_seq / simultaneous_sequences))
@@ -272,12 +302,19 @@ class DeconvolutionMetapupils(Deconvolution):
                 frames_apodized_seq = []
                 frames_ft = []
                 sigma_seq = []
+                diversity_seq = []
                 projection_seq = []
                 for i in range(self.n_o):
                     frames_apodized_seq.append(self.frames_apodized[i][seq, ...])
                     frames_ft.append(torch.fft.fft2(self.frames_apodized[i][seq, ...]))
                     sigma_seq.append(self.sigma[i][seq, ...])
-                    projection_seq.append(self.projection_matrices[seq, :, :, :])                    
+                    diversity_seq.append(self.diversity[i][seq, ...].to(self.device))
+                    
+                    projection_h = []
+                    for j in range(self.n_heights):
+                        projection_h.append(self.projection_matrices[j][seq, :, :])
+                    
+                    projection_seq.append(projection_h)
 
                 n_seq = len(seq)                                            
                             
@@ -285,11 +322,11 @@ class DeconvolutionMetapupils(Deconvolution):
             
                 # Compute PSF from current wavefront coefficients and reference 
                 # Set piston of the metapupil to zero. We are not sensitive to piston
-                modes_nopiston = modes.clone()
-                modes_nopiston[:, :, 0] = 0.0
+                # modes_nopiston = modes.clone()
+                # modes_nopiston[:, :, 0] = 0.0
                             
                 # modes -> (n_seq, n_f, self.n_modes)                                    
-                psf, psf_ft = self.compute_psfs(modes_nopiston[:, :, 0:n_active], projection_seq)
+                psf, psf_ft = self.compute_psfs(modes, n_active, projection_seq, diversity_seq)
                 
                 if self.show_object_info or loop == n_iterations - 1:
                     obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, psf_ft, sigma_seq)                        
@@ -362,7 +399,7 @@ class DeconvolutionMetapupils(Deconvolution):
         self.obj = [None] * self.n_o
         self.wavefront_metapupil = [None] * self.n_heights
         
-        self.modes = modes.detach()
+        # self.modes = modes.detach()
         
                 
         for i in range(self.n_o):            
@@ -373,7 +410,7 @@ class DeconvolutionMetapupils(Deconvolution):
             self.obj[i] = torch.cat(tmp, dim=0)
 
         for i in range(self.n_heights):
-            self.wavefront_metapupil[i] = self.modes[i].detach()
+            self.wavefront_metapupil[i] = modes[i].detach()
                     
         return 
     

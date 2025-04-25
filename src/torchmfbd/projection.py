@@ -1,6 +1,5 @@
 import numpy as np
 import torchmfbd.zern as zern
-# import zern
 import matplotlib.pyplot as pl
 from tqdm import tqdm
 from dict_hash import sha256

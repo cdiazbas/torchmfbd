@@ -1,6 +1,6 @@
 import torch
 
-def warp(image, flow_AB):
+def warp(image, flow_AB, mode='bilinear'):
     """
     Warps an image using the provided flow field.
 
@@ -35,6 +35,31 @@ def warp(image, flow_AB):
 
     vgrid[:,1,:,:] = 2.0*vgrid[:,1,:,:] / max(H-1,1)-1.0
 
-    warped_image = torch.nn.functional.grid_sample(image, vgrid.permute(0,2,3,1), mode='bilinear', padding_mode='reflection', align_corners=False)
+    warped_image = torch.nn.functional.grid_sample(image, 
+                                                   vgrid.permute(0,2,3,1), 
+                                                   mode=mode, 
+                                                   padding_mode='reflection', 
+                                                   align_corners=False)
 
+    return warped_image
+
+def warp_affine(image, affine, mode='bilinear'):
+    """
+    Warps an image using the provided affine matrix.
+
+    Args:
+        image (torch.Tensor): The input image tensor of shape (H, W) where H is the height, and W is the width.
+        flow_AB (torch.Tensor): The affine transformation matrix of shape (2, 3)        
+
+    Returns:
+        torch.Tensor: The warped image tensor of shape (H, W).
+    """
+        
+    tmp = torch.nn.functional.affine_grid(affine, image.shape, align_corners=False)        
+    warped_image = torch.nn.functional.grid_sample(image, 
+                                                   tmp, 
+                                                   mode=mode, 
+                                                   padding_mode='reflection', 
+                                                   align_corners=False)
+        
     return warped_image

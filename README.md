@@ -23,3 +23,7 @@ Install it using ``pip install torchmfbd``.
 ## Documentation
 
 Visit the [documentation](https://aasensio.github.io/torchmfbd/) for detailed instructions of installation and use.
+
+## Reproducibility
+All figures of the accompanying paper can be reproduced using the code in the `reproducibility` directory. The
+observations can be download from [here](https://cloud.iac.es/index.php/s/EqMGsqBeyfq6Bnr).

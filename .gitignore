@@ -9,6 +9,9 @@ __pycache__/
 # All temporary files
 *.npz
 
+# Observations for reproducibility
+reproducibility/obs
+
 # Distribution / packaging
 .Python
 build/

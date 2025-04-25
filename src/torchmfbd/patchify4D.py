@@ -103,12 +103,12 @@ class Patchify4D(object):
                 x2 = x.clone().unsqueeze(1)
             else:
                 x2 = x.clone().unsqueeze(2)
-            mask = self.mask[:, 0:1, :, :]
+            mask = self.mask[:, 0:1, :, :].clone()
         else:
             x2 = x.clone()
-            mask = self.mask
+            mask = self.mask.clone()
 
-        mask = mask.to(x.device)
+        mask = mask.to(x.device)        
 
         if apodization > 0:
             x2 = x2[:, :, apodization:-apodization, apodization:-apodization]
@@ -135,20 +135,20 @@ class Patchify4D(object):
             winOut[0:npix_apod] = win[0:npix_apod]
             winOut[-npix_apod:] = win[-npix_apod:]
             weight = np.outer(winOut, winOut)
-            self.weight = torch.tensor(weight, device=x.device)
+            self.weight = torch.tensor(weight.astype('float32'), device=x.device)
         
         # Reduce the size of the patch to account for the apodization
         K = self.K - 2*apodization
-
+        
         # Compute the new size of the image
         new_size_x = int((self.Lx - 1) * self.S + 1 - 2*self.P + self.D*(K-1))
-        new_size_y = int((self.Ly - 1) * self.S + 1 - 2*self.P + self.D*(K-1))
+        new_size_y = int((self.Ly - 1) * self.S + 1 - 2*self.P + self.D*(K-1))        
                         
         output_size = (new_size_x, new_size_y)
         
-        # Apply the weighting to the patches
-        x2 *= self.weight
-        mask *= self.weight
+        # Apply the weighting to the patches        
+        x2 *= self.weight[None, None, :, :]
+        mask *= self.weight[None, None, :, :]
                 
         if self.flatten_sequences:
             x2 = rearrange(x2, '(n L) f x y -> (n) (f x y) L', n=self.n_scans, L=self.n_patches)
@@ -162,7 +162,7 @@ class Patchify4D(object):
 
         x2 = rearrange(x2, '(n) f x y -> n f x y', n=self.n_scans)
         mask = rearrange(mask, '(n) f x y -> n f x y', n=self.n_scans)
-        
+                
         final = x2 / mask
 
         if xndim == 3:
