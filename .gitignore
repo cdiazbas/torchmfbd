@@ -8,6 +8,7 @@ __pycache__/
 
 # All temporary files
 *.npz
+*.npy
 
 # Observations for reproducibility
 reproducibility/obs
