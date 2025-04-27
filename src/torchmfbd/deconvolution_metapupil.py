@@ -59,7 +59,7 @@ class DeconvolutionMetapupils(Deconvolution):
             - psf_ft (torch.Tensor): The FFT of the normalized PSFs.
         """
                 
-        n_f = modes[0].shape[1]
+        n_f = modes[0].shape[0]
                                         
         psf_norm = [None] * self.n_o
         psf_ft = [None] * self.n_o        
@@ -89,9 +89,10 @@ class DeconvolutionMetapupils(Deconvolution):
                     wavefront += torch.einsum('ijk,klm->ijlm', modes_directions, self.basis_meta[j][i][0:n_active_height, :, :])
                                     
             # Reuse the same wavefront per object but add the diversity
-            wavef = []
+            # We use any of the basis, which surely contains the defocus mode
+            wavef = []            
             for j in range(len(self.init_frame_diversity[i])):                
-                div = diversity[i][:, j:j+n_f, None, None] * self.basis[i][2, :, :][None, None, :, :]
+                div = diversity[i][:, j:j+n_f, None, None] * self.basis_meta[0][i][2, :, :][None, None, :, :]
                 wavef.append(wavefront + div)
             
             wavef = torch.cat(wavef, dim=1)
@@ -144,15 +145,7 @@ class DeconvolutionMetapupils(Deconvolution):
 
             M = torch.tensor(M.astype('float32'), device=self.device)
             self.projection_matrices.append(M)
-        
-        # We need to add the piston mode to the basis
-        # self.logger.info(f"Including piston mode...")
-
-        # for i, h in enumerate(self.heights):
-        #     for j in range(self.n_o):
-        #         piston = torch.ones(1, self.npix, self.npix).to(self.device) * self.pupil_meta[i][j]
-        #         self.basis_meta[i][j] = torch.cat([piston, self.basis_meta[i][j]], dim=0)
-
+               
     def plot_metapupils(self):
         zernike_projection = projection.ZernikeProjectionMatrix()
         zernike_projection.plotMetapupils(self.XY.cpu().numpy(),
@@ -212,9 +205,9 @@ class DeconvolutionMetapupils(Deconvolution):
             
         self.logger.info(f"Frames")        
         for i in range(self.n_o):
-            n_seq, n_f, n_x, n_y = self.frames_apodized[i].shape
+            n_s, n_f, n_x, n_y = self.frames_apodized[i].shape
             self.logger.info(f"  * Object {i}")
-            self.logger.info(f"     - Number of sequences {n_seq}...")
+            self.logger.info(f"     - Number of sequences {n_s}...")
             self.logger.info(f"     - Number of frames {n_f}...")
             self.logger.info(f"     - Number of diversity channels {len(self.init_frame_diversity[i])}...")
             for j, ind in enumerate(self.init_frame_diversity[i]):
@@ -277,13 +270,15 @@ class DeconvolutionMetapupils(Deconvolution):
         _, self.psf_diffraction_ft = self.compute_psf_diffraction()
 
         n_active = 2
+
+        active_per_height = [n_active] * self.n_heights
         
         # Split sequences in batches
-        ind = np.arange(n_seq)
+        ind_reference = np.arange(n_s)
 
         # Split the sequences in groups of simultaneous sequences to be computed in parallel
-        ind = np.array_split(ind, np.ceil(n_seq / simultaneous_sequences))
-        
+        ind = np.array_split(ind_reference, np.ceil(n_s / simultaneous_sequences))
+                
         n_sequences = len(ind)
         
         self.modes = [None] * n_sequences        
@@ -296,7 +291,16 @@ class DeconvolutionMetapupils(Deconvolution):
         # Start optimization
         #--------------------------------
         for loop in t:
-        
+
+            # Split the sequences in groups of simultaneous sequences to be computed in parallel
+            # But we need to shuffle the sequences to avoid that the same sequences are always computed together
+            # In the last iteration, we do not shuffle the sequences to end up with the original order
+            ind = ind_reference.copy()
+            if loop < n_iterations-1:            
+                np.random.shuffle(ind)
+            
+            ind = np.array_split(ind, np.ceil(n_s / simultaneous_sequences))
+            
             for i_seq, seq in enumerate(ind):
                 
                 frames_apodized_seq = []
@@ -315,8 +319,6 @@ class DeconvolutionMetapupils(Deconvolution):
                         projection_h.append(self.projection_matrices[j][seq, :, :])
                     
                     projection_seq.append(projection_h)
-
-                n_seq = len(seq)                                            
                             
                 opt.zero_grad(set_to_none=True)
             
@@ -371,7 +373,9 @@ class DeconvolutionMetapupils(Deconvolution):
                     tmp['gpu'] = f'{gpu_usage} %'
                     tmp['mem'] = f'{memory_usage} ({memory_pct})'
 
-                tmp['active'] = f'{n_active}'
+                active_per_height = [int(min(n_active, self.n_modes_height[i])) for i in range(self.n_heights)]
+
+                tmp['active'] = f'{active_per_height}'
                 if self.show_object_info:
                     tmp['contrast'] = f'{torch.std(self.obj_filter[0]) / torch.mean(self.obj_filter[0]) * 100.0:7.4f}'
                     tmp['minmax'] = f'{torch.min(self.obj_filter[0]):7.4f}/{torch.max(self.obj_filter[0]):7.4f}'

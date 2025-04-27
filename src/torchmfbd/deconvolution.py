@@ -65,6 +65,7 @@ class Deconvolution(object):
             if self.config['optimization']['gpu'] < 0:
                 self.logger.info(f"GPU is available but not used. Computing in cpu")
                 self.cuda = False
+                self.handle = None
                 self.device = torch.device("cpu")
             else:
                 self.device = torch.device(f"cuda:{self.config['optimization']['gpu']}")
@@ -1324,7 +1325,7 @@ class Deconvolution(object):
                 
                 # scheduler.step()
 
-                if self.cuda:
+                if self.handle is not None:
                     gpu_usage = f'{self.handle.gpu_utilization():03d}'
                     memory_usage = f'{self.handle.memory_used() / 1024**2:4.1f}/{self.handle.memory_total() / 1024**2:4.1f} MB'
                     memory_pct = f'{self.handle.memory_used() / self.handle.memory_total() * 100.0:4.1f}%'
@@ -1424,7 +1425,6 @@ class Deconvolution(object):
         deltat = tfinal - tinit
         deltat_global = tfinal - tinit_global        
         self.total_time = deltat_global        
-        self.total_mem = self.handle.memory_used() / 1024**2
         self.logger.info(f"Elapsed time {deltat:.2f} s - Total time: {deltat_global:.2f} s")
 
         # Concatenate the results from all sequences and all objects independently
