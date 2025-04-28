@@ -75,6 +75,7 @@ class Deconvolution(object):
         else:
             self.logger.info(f"No GPU is available. Computing in cpu")
             self.device = torch.device("cpu")
+            self.handle = None
 
         # self.n_modes = np.sum(np.arange(self.config['psf']['nmax_modes'])+2)
         self.n_modes = self.config['psf']['nmax_modes']
