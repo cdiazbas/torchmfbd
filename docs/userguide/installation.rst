@@ -19,7 +19,7 @@ For the installation, just type:
 
 ::
 
-    conda create -n torchmfbd
+    conda create -n torchmfbd python=3.11
     conda activate torchmfbd
     pip install torchmfbd
 
