@@ -6,6 +6,7 @@ import torch
 import sklearn.decomposition
 import logging
 import scipy.linalg as la
+import os
 
 class Basis(object):
     """
@@ -204,7 +205,12 @@ class Basis(object):
             Vh = H
             coeffs = W
 
-            filename = f'basis/nmf_{int(self.wavelength)}_nmf_{self.n_modes}_r0_{int(self.r0_min)}_{int(self.r0_max)}.npz'
+            filename = f'basis/nmf_{int(self.wavelength)}_n_{self.n_modes}_r0_{int(self.r0_min)}_{int(self.r0_max)}.npz'
+            
+            # Create the directory if it does not exist
+            if not os.path.exists('basis'):
+                os.makedirs('basis')
+            
             self.logger.info(f"Saving NMF file on {filename}...")
             np.savez(filename, basis=Vh, psf_diffraction=psf_diff, modes=modes, coeffs=coeffs, info=[self.wavelength, self.diameter, self.pix_size, self.central_obs])
 
@@ -218,7 +224,12 @@ class Basis(object):
 
             coeffs = tmp @ Vh.T
         
-            filename = f'basis/pca_{int(self.wavelength)}_nmf_{self.n_modes}_r0_{int(self.r0_min)}_{int(self.r0_max)}.npz'
+            filename = f'basis/pca_{int(self.wavelength)}_n_{self.n_modes}_r0_{int(self.r0_min)}_{int(self.r0_max)}.npz'
+            
+            # Create the directory if it does not exist
+            if not os.path.exists('basis'):
+                os.makedirs('basis')
+            
             self.logger.info(f"Saving PCA file on {filename}...")
             np.savez(filename, basis=Vh, psf_diffraction=psf_diff, modes=modes, coeffs=coeffs, info=[self.wavelength, self.diameter, self.pix_size, self.central_obs])
     

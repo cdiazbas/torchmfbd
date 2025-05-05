@@ -58,7 +58,11 @@ class Deconvolution(object):
         self.config = configuration._check_config(self.config)
                 
         # Check the presence of a GPU
-        self.cuda = torch.cuda.is_available()        
+        self.cuda = torch.cuda.is_available()
+        
+        # Check that the GPU compatible
+        if len(Device.all()) == 0:
+            self.cuda = False
 
         # Ger handlers to later check memory and usage of GPUs
         if self.cuda:

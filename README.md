@@ -12,7 +12,7 @@ defining a spatially variant PSF.
 - User-friendly API.
 - Easy to use configuration file.
 - Spatially invariant and variant PSFs.
-- Easy-to-use regularization. The current version supports smooth solutions, and solutions based on the :math:`\ell_1` penalization of the isotropic
+- Easy-to-use regularization. The current version supports smooth solutions, and solutions based on the $\ell_1$ penalization of the isotropic
 undecimated wavelet transform of the object. Regularizations are easily extendable.
 - Phase diversity.
 
