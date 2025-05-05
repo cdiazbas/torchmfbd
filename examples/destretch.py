@@ -78,6 +78,6 @@ if __name__ == '__main__':
     
     
     print("Generating movie...")
-    torchmfbd.gen_movie(frames[0, 1, ...], warped[0, 1, ...], fps=8, filename='movie.mp4')
-    torchmfbd.gen_movie(frames[0, 1, ...], warped[0, 1, ...], fps=8, filename='movie2.mp4')
+    # torchmfbd.gen_movie(frames[0, 1, ...], warped[0, 1, ...], fps=8, filename='movie.mp4')
+    # torchmfbd.gen_movie(frames[0, 1, ...], warped[0, 1, ...], fps=8, filename='movie2.mp4')
     

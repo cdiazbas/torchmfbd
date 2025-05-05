@@ -66,3 +66,5 @@ if __name__ == '__main__':
 
     ax[0, 1].set_title('Reconstructed object')
     ax[0, 2].set_title('Reconstructed object (updated cutoffs)')
+
+    decSI.write('test.fits')

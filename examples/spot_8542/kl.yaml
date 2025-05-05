@@ -34,6 +34,7 @@ regularization:
 psf:
     model : kl
     nmax_modes : 44
+    orthogonalize : True
 
 initialization:
     object : contrast

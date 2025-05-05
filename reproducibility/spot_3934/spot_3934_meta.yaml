@@ -32,7 +32,7 @@ regularization:
 
 psf:
     model : kl
-    nmax_modes : [44, 54, 65]
+    nmax_modes : [44, 119, 324]
 
 initialization:
     object : contrast

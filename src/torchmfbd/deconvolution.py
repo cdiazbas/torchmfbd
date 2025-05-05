@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.utils.data
 import torchmfbd.zern as zern
 import torchmfbd.util as util
 from collections import OrderedDict
@@ -20,7 +19,7 @@ import yaml
 import torchmfbd.configuration as configuration
 import time
 import scipy.optimize as optim
-# from pytorch_optimizer import Shampoo
+from astropy.io import fits
 
 class Deconvolution(object):
     def __init__(self, config, add_piston=False):
@@ -58,11 +57,11 @@ class Deconvolution(object):
         self.config = configuration._check_config(self.config)
                 
         # Check the presence of a GPU
-        self.cuda = torch.cuda.is_available()
-        
+        self.cuda = torch.cuda.is_available()      
+
         # Check that the GPU compatible
         if len(Device.all()) == 0:
-            self.cuda = False
+            self.cuda = False  
 
         # Ger handlers to later check memory and usage of GPUs
         if self.cuda:
@@ -130,6 +129,12 @@ class Deconvolution(object):
 
         self.simultaneous_sequences = None
         self.infer_object = None
+
+        if 'orthogonalize' in self.config['psf']:
+            self.orthogonalize_basis = self.config['psf']['orthogonalize']
+        else:
+            self.orthogonalize_basis = False
+
        
     def define_basis(self, n_modes=None):
 
@@ -167,6 +172,7 @@ class Deconvolution(object):
 
         self.pupil = [None] * self.n_o
         self.basis = [None] * self.n_o
+        self.defocus_basis = [None] * self.n_o
         self.rho = [None] * self.n_o
         self.diffraction_limit = [None] * self.n_o
         self.cutoff = [None] * self.n_o
@@ -208,8 +214,11 @@ class Deconvolution(object):
             pupil = util.aperture(npix=self.npix, 
                             cent_obs = self.config['telescope']['central_obscuration'] / self.config['telescope']['diameter'], 
                             spider=self.config['telescope']['spider'] / pixel_size_pupil, 
-                            overfill=overfill)             
+                            overfill=overfill)
             
+            # Obtain defocus basis for phase diversity
+            defocus_basis = self.get_defocus_basis(overfill=overfill)
+                        
             # PSF model parameterized with the wavefront
             if (self.psf_model.lower() in ['zernike', 'kl', 'nmf']):
                             
@@ -236,6 +245,12 @@ class Deconvolution(object):
                             basis = np.concatenate([pupil * np.ones((1, self.npix, self.npix)), basis[0:self.n_modes, :, :]], axis=0)
                             self.n_modes += 1
 
+                        # Orthogonalize the Zernike modes if needed
+                        if self.orthogonalize_basis:
+                            self.logger.info(f"Orthogonalizing Zernike modes")
+                            basis = util.orthogonalize(basis, pupil)
+                            self.logger.info(f"  * Orthogonalization done")
+
                         np.savez(f"{filename}", basis=basis)
 
                 if (self.psf_model.lower() == 'kl'):
@@ -261,6 +276,12 @@ class Deconvolution(object):
                             basis = np.concatenate([pupil * np.ones((1, self.npix, self.npix)), basis[0:self.n_modes, :, :]], axis=0)
                             self.n_modes += 1
 
+                        # Orthogonalize the KL modes if needed
+                        if self.orthogonalize_basis:
+                            self.logger.info(f"Orthogonalizing KL modes")
+                            basis = util.orthogonalize(basis, pupil)
+                            self.logger.info(f"  * Orthogonalization done")
+
                         np.savez(f"{filename}", basis=basis, variance=self.kl.varKL)
                 
                 if (self.psf_model.lower() == 'nmf'):
@@ -278,11 +299,13 @@ class Deconvolution(object):
                     
                 pupil = torch.tensor(pupil.astype('float32')).to(self.device)
                 basis = torch.tensor(basis[0:self.n_modes, :, :].astype('float32')).to(self.device)
+                defocus_basis = torch.tensor(defocus_basis.astype('float32')).to(self.device)
 
                 # Following van Noort et al. (2005) we normalize the basis to the maximum wavelength
                 # so that the wavefront is given in radians
                 if (self.psf_model.lower() in ['zernike', 'kl']):
                     basis /= normalized_wavelengths[i]
+                    defocus_basis /= normalized_wavelengths[i]
 
                 if (self.add_piston):
                     self.logger.info(f"Adding piston mode...")
@@ -307,6 +330,7 @@ class Deconvolution(object):
                 if ind_wavelengths[j] == i:
                     self.pupil[j] = pupil
                     self.basis[j] = basis
+                    self.defocus_basis[j] = defocus_basis
                     self.rho[j] = rho
                     self.diffraction_limit[j] = diffraction_limit                
 
@@ -451,6 +475,35 @@ class Deconvolution(object):
                 
         return Z
     
+    def get_defocus_basis(self, overfill):
+        """
+        Precalculate Zernike polynomials for a given overfill factor.
+        This function computes the Zernike polynomials up to `self.n_modes` and 
+        returns them in a 3D numpy array. The Zernike polynomials are calculated 
+        over a grid defined by `self.npix` and scaled by the `overfill` factor.
+        Parameters:
+        -----------
+        overfill : float
+            The overfill factor used to scale the radial coordinate `rho`.
+        Returns:
+        --------
+        Z : numpy.ndarray
+            A 3D array of shape (self.n_modes, self.npix, self.npix) containing 
+            the precalculated Zernike polynomials. Each slice `Z[mode, :, :]` 
+            corresponds to a Zernike polynomial mode.
+        """
+        
+        Z_machine = zern.ZernikeNaive(mask=[])
+        x = np.linspace(-1, 1, self.npix)
+        xx, yy = np.meshgrid(x, x)
+        rho = overfill * np.sqrt(xx ** 2 + yy ** 2)
+        theta = np.arctan2(yy, xx)
+        aperture_mask = rho <= 1.0
+        
+        defocus = Z_machine.Z_nm(2, 0, rho, theta, True, 'Jacobi')
+                
+        return defocus * aperture_mask
+    
     def compute_annealing(self, modes, n_iterations):
         """
         Annealing function
@@ -561,7 +614,7 @@ class Deconvolution(object):
             # Reuse the same wavefront per object but add the diversity
             wavef = []
             for j in self.init_frame_diversity[i]:                
-                div = diversity[i][:, j:j+n_f, None, None] * self.basis[i][2, :, :][None, None, :, :]
+                div = diversity[i][:, j:j+n_f, None, None] * self.defocus_basis[i][None, None, :, :]
                 wavef.append(wavefront + div)
             
             wavef = torch.cat(wavef, dim=1)
@@ -1003,7 +1056,34 @@ class Deconvolution(object):
             self.obj_diffraction[i] = torch.cat(tmp, dim=0)
         
         return 
+    
+    def write(self, filename, extra=None):
+        """
+        Write the deconvolved object to a file.
+        Parameters:
+        -----------
+        filename : str
+            The name of the file to which the object will be written.
+        Returns:
+        --------
+        None
+        """
+        
+        self.logger.info(f"Writing object to {filename}...")
+        
+        hdu = [fits.PrimaryHDU(self.modes.cpu().numpy())]
+        for i in range(self.n_o):
+            tmp = fits.ImageHDU(self.obj[i].cpu().numpy())
+            tmp.header['OBJECT'] = f'Object {i+1}'
+            if extra is not None:
+                for k, v in extra.items():
+                    tmp.header[k] = v
+            hdu.append(tmp)
+        
+        hdu = fits.HDUList(hdu)
+        hdu.writeto(filename, overwrite=True)
 
+        return
             
     def deconvolve(self,                                    
                    simultaneous_sequences=1, 
@@ -1457,6 +1537,7 @@ class Deconvolution(object):
             self.obj_diffraction[i] = torch.cat(tmp, dim=0)
         
         return 
+    
     
 if __name__ == '__main__':
     pass

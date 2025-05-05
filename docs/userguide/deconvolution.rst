@@ -107,6 +107,8 @@ The deconvolution can be carried out by the following code:
         ax[0, i].imshow(frames[0, i, 0, 0:npix, 0:npix])
         ax[1, i].imshow(obj[i][0, :, :])
 
+    deconv.write('output.fits')
+
 First, we instantiate the ``torchmfbd.Deconvolution`` class with the configuration file. We then patchify the frames and 
 add them to the deconvolution object. The field of view is mosaicked into patches of size 64x64 with a stride of 50 pixels, so 
 that they overlap. The frames are added object by object, indicating the index of the object ``id_object`` and the index of the
@@ -195,6 +197,8 @@ Once the deconvolution is finished, several attributes are available in the deco
 * ``degraded``: The object convolved with the inferred PSFs. They can be used to check the quality of the deconvolution because they should be similar to the input frames.
 
 The mosaicking is undone by calling the ``unpatchify`` function.
+
+A final call to the ``write`` method will save the deconvolved objects and the modes to a FITS file.
 
 Modifying filter
 ----------------

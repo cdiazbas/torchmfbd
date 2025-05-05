@@ -28,7 +28,7 @@ def aperture(npix=256, cent_obs=0.0, spider=0, overfill=1.0):
 
     rarr = np.sqrt(np.power(xarr,2) + np.power(yarr,2))/(npix/2)
     outside = np.where(rarr > 1.0/overfill)
-    inside = np.where(rarr < cent_obs)
+    inside = np.where(rarr < cent_obs * 1.0/overfill)
     
     illum[outside] = 0.0
     if np.any(inside[0]):
@@ -203,3 +203,28 @@ def num_modes_height(z, n_modes_0, r00, r0z, D, afov):
     z *= 1e5
     ratio = (r00 / r0z)**2 * (1.0 + (z * np.sin(afov)) / D)**2
     return ratio * n_modes_0
+
+def orthogonalize(basis, pupil):
+    """
+    Orthogonalize the basis vectors using the Gram-Schmidt process via the QR decomposition.
+    This is specially useful for the case of a pupil function that is not circular, 
+    with strong obscurations
+
+    Args:
+        basis (torch.Tensor): The basis vectors to be orthogonalized.
+        pupil (torch.Tensor): The pupil function used for orthogonalization.
+
+    Returns:
+        torch.Tensor: The orthogonalized basis vectors.
+    """
+    
+    M, N, _ = basis.shape
+
+    # Take into account the pupil function
+    fun = basis * pupil[None, :, :]
+    A = fun.reshape(M, N*N).T
+    Q, R = np.linalg.qr(A)
+
+    Q = Q.T.reshape(M, N, N)
+
+    return Q

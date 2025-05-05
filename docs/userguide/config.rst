@@ -51,6 +51,7 @@ Spatially invariant
     psf:
         model : kl
         nmax_modes : 44
+        orthogonalize : False
 
     initialization:
         object : contrast
@@ -111,6 +112,7 @@ psf
 ^^^
 * ``model`` : model to be used for the PSF. Options are ``kl`` (which uses Karhunen-Loeve modes) or ``zernike`` (which uses Zernike modes)
 * ``nmax_modes`` : number of modes to be used for the PSF
+* ``orthogonalize`` : if True, the modes are re-orthogonalized. This is relevant when strong central obscuration is present.
 
 initialization
 ^^^^^^^^^^^^^^
