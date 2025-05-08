@@ -36,7 +36,7 @@ if __name__ == '__main__':
 
     # Patchify and add the frames
     for i in range(2):        
-        frames_patches = patchify.patchify(frames[:, i, :, :, :], patch_size=64, stride_size=50, flatten_sequences=True)
+        frames_patches = patchify.patchify(frames[:, i, :, :, :], patch_size=64, stride_size=32, flatten_sequences=True)
         decSI.add_frames(frames_patches, id_object=i, id_diversity=0, diversity=0.0)
                 
     decSI.deconvolve(infer_object=False, 
@@ -46,12 +46,12 @@ if __name__ == '__main__':
             
     obj = []
     for i in range(2):
-        obj.append(patchify.unpatchify(decSI.obj[i], apodization=6, weight_type='cosine', weight_params=30).cpu().numpy())        
+        obj.append(patchify.unpatchify(decSI.obj[i], apodization=0, weight_type='cosine', weight_params=32).cpu().numpy())        
     
     fig, ax = pl.subplots(nrows=2, ncols=3, figsize=(15, 10))
     for i in range(2):
-        ax[i, 0].imshow(frames[0, i, 0, :, :], cmap='gray')
-        ax[i, 1].imshow(obj[i][0, :, :], cmap='gray')
+        ax[i, 0].imshow(frames[0, i, 0, :, :], cmap='gray', interpolation='nearest')
+        ax[i, 1].imshow(obj[i][0, :, :], cmap='gray', interpolation='nearest')
 
 
     decSI.update_object(cutoffs=[[0.3, 0.35], [0.3, 0.35]])
@@ -59,12 +59,13 @@ if __name__ == '__main__':
     # Unpatchify
     obj = []
     for i in range(2):
-        obj.append(patchify.unpatchify(decSI.obj[i], apodization=6, weight_type='cosine', weight_params=30).cpu().numpy())        
+        obj.append(patchify.unpatchify(decSI.obj[i], apodization=0, weight_type='cosine', weight_params=32).cpu().numpy())        
         
     for i in range(2):
-        ax[i, 2].imshow(obj[i][0, :, :], cmap='gray')
+        ax[i, 2].imshow(obj[i][0, :, :], cmap='gray', interpolation='nearest')
 
     ax[0, 1].set_title('Reconstructed object')
     ax[0, 2].set_title('Reconstructed object (updated cutoffs)')
+    pl.savefig('spot_8542_kl_patches.png', dpi=300)
 
     decSI.write('test.fits')

@@ -79,13 +79,14 @@ if __name__ == '__main__':
     best_frame = []
     obj = []
     for i in range(2):
-        obj.append(patchify.unpatchify(decSI.obj[i], apodization=6, weight_type='cosine', weight_params=30).cpu().numpy())        
+        obj.append(patchify.unpatchify(decSI.obj[i], apodization=0, weight_type='cosine', weight_params=32).cpu().numpy())        
         best_frame.append(patchify.unpatchify(frames_patches[i][:, ind_best_contrast, :, :], apodization=6, weight_type='cosine', weight_params=30).cpu().numpy())
     
     fig, ax = pl.subplots(nrows=2, ncols=2, figsize=(10, 10))
     for i in range(2):
-        ax[0, i].imshow(best_frame[i][0, :, :])
-        ax[1, i].imshow(obj[i][0, :, :])
+        ax[0, i].imshow(best_frame[i][0, :, :], cmap='gray', interpolation='nearest')
+        ax[1, i].imshow(obj[i][0, :, :], cmap='gray', interpolation='nearest')
+    pl.savefig('spot_8542.png', dpi=300, bbox_inches='tight')
 
     mfbd = [None] * 2
     mfbd[0] = fits.open('../aux/camXX_2020-07-27T08:35:09_00000_8542_8542_+65_lc0.fits')[0].data[None, :, ::-1]

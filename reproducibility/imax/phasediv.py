@@ -10,11 +10,11 @@ import torchmfbd
 
 if __name__ == '__main__':
     
-    f = fits.open('imax_focus.fits')
+    f = fits.open('../obs/imax_focus.fits')
     im_focus = f[0].data
     f.close()
 
-    f = fits.open('imax_defocus.fits')
+    f = fits.open('../obs/imax_defocus.fits')
     im_defocus = f[0].data
     f.close()
 
@@ -56,15 +56,16 @@ if __name__ == '__main__':
             
     obj = decSI.obj[0].cpu().numpy()
     
-    fig, ax = pl.subplots(nrows=2, ncols=3, figsize=(15, 5))
+    fig, ax = pl.subplots(nrows=2, ncols=3, figsize=(10, 5))
 
-    ax[0, 0].imshow(frames_focus[0, 0, :, :])
-    ax[0, 1].imshow(frames_defocus[0, 0, :, :])
-    ax[0, 2].imshow(obj[0, :, :])
+    ax[0, 0].imshow(frames_focus[0, 0, :, :], interpolation='nearest', cmap='gray')
+    ax[0, 1].imshow(frames_defocus[0, 0, :, :], interpolation='nearest', cmap='gray')
+    ax[0, 2].imshow(obj[0, :, :], interpolation='nearest', cmap='gray')
 
-    ax[1, 0].imshow(frames_focus[0, 0, 200:400, 200:400])
-    ax[1, 1].imshow(frames_defocus[0, 0, 200:400, 200:400])
-    ax[1, 2].imshow(obj[0, 200:400, 200:400])
+    ax[1, 0].imshow(frames_focus[0, 0, 200:400, 200:400], interpolation='nearest', cmap='gray')
+    ax[1, 1].imshow(frames_defocus[0, 0, 200:400, 200:400], interpolation='nearest', cmap='gray')
+    ax[1, 2].imshow(obj[0, 200:400, 200:400], interpolation='nearest', cmap='gray')
+    pl.savefig('imax.png', dpi=300)
 
     # Save the object as a fits file
     hdu0 = fits.PrimaryHDU(frames_focus[0, 0, :, :])

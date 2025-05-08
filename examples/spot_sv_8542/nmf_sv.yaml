@@ -22,7 +22,7 @@ optimization:
     gpu : 0
     transform : softplus
     softplus_scale : 1000.0    
-    lr_obj : 0.02
+    lr_obj : 0.002
     lr_modes : 0.08
     lr_tt : 0.003
 
@@ -41,8 +41,8 @@ regularization:
 psf:
     model : nmf        
     nmax_modes : 150
-    filename: 'basis/nmf_8542_n_150_r0_5_30.npz'
-    ngrid_modes: 8
+    filename: '../basis/nmf_8542_n_150_r0_5_30.npz'
+    ngrid_modes: 2
 
 initialization:
     object : contrast

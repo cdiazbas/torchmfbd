@@ -547,17 +547,15 @@ class DeconvolutionSV(Deconvolution):
                 # Update the learning rate
                 scheduler.step()
                 
-                
-                # Do some printing
-                gpu_usage = f'{self.handle.gpu_utilization()}'            
-                memory_usage = f'{self.handle.memory_used() / 1024**2:4.1f}/{self.handle.memory_total() / 1024**2:4.1f} MB'
-                memory_pct = f'{self.handle.memory_used() / self.handle.memory_total() * 100.0:4.1f}%'
-                
+                # Update the learning rate                
                 current_lr_obj = optimizer.param_groups[0]['lr']
                 current_lr_modes = optimizer.param_groups[1]['lr']
 
                 tmp = OrderedDict()
                 if self.cuda:
+                    gpu_usage = f'{self.handle.gpu_utilization()}'
+                    memory_usage = f'{self.handle.memory_used() / 1024**2:4.1f}/{self.handle.memory_total() / 1024**2:4.1f} MB'
+                    memory_pct = f'{self.handle.memory_used() / self.handle.memory_total() * 100.0:4.1f}%'
                     tmp['gpu'] = f'{gpu_usage} %'
                     tmp['mem'] = f'{memory_usage} ({memory_pct})'
                 tmp['lrm'] = f'{current_lr_modes:8.6f}'

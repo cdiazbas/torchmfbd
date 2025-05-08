@@ -74,12 +74,10 @@ def download_and_extract_nextcloud_share(share_url, output_dir="."):
                 zip_ref.extractall(output_dir)
             print(f"Extraction complete. Contents are in '{output_dir}'.")
             
-            # --- Optional: Clean up the zip file ---
+            # --- Mandatory: Clean up the zip file ---
             try:
-                cleanup = input(f"Do you want to delete the downloaded zip file '{zip_filename}'? (y/N): ")
-                if cleanup.lower() == 'y':
-                    os.remove(zip_filename)
-                    print(f"Deleted '{zip_filename}'.")
+                os.remove(zip_filename)
+                print(f"Deleted '{zip_filename}'.")
             except Exception as e:
                 print(f"Could not delete zip file: {e}", file=sys.stderr)
                 
@@ -104,11 +102,30 @@ def download_and_extract_nextcloud_share(share_url, output_dir="."):
 
 # --- Usage ---
 share_link = "https://cloud.iac.es/index.php/s/EqMGsqBeyfq6Bnr"
-destination_folder = "downloaded_obs" # Specify the folder to extract into
+destination_folder = "."  # Use the current folder as the destination
 
-# Create the destination directory if it doesn't exist
-if not os.path.exists(destination_folder):
-    os.makedirs(destination_folder)
-    print(f"Created directory: {destination_folder}")
-
+# Download and extract the zip file in the current folder
 download_and_extract_nextcloud_share(share_link, destination_folder)
+
+# Move the 'aux' and 'obs' folders one level up
+folders_to_move = ["aux", "obs"]
+for folder in folders_to_move:
+    folder_path = os.path.join(destination_folder, "torchmfbd", folder)
+    if os.path.exists(folder_path) and os.path.isdir(folder_path):
+        new_path = os.path.join(destination_folder, folder)
+        if not os.path.exists(new_path):  # Avoid overwriting
+            os.rename(folder_path, new_path)
+            print(f"Moved {folder} to {new_path}")
+        else:
+            print(f"Skipped moving {folder} as {new_path} already exists.")
+    else:
+        print(f"{folder_path} does not exist or is not a directory, skipping.")
+
+# Remove the now-empty 'torchmfbd' folder if it exists
+torchmfbd_folder = os.path.join(destination_folder, "torchmfbd")
+if os.path.exists(torchmfbd_folder) and os.path.isdir(torchmfbd_folder):
+    try:
+        os.rmdir(torchmfbd_folder)
+        print(f"Removed empty folder: {torchmfbd_folder}")
+    except OSError as e:
+        print(f"Could not remove {torchmfbd_folder}: {e}")

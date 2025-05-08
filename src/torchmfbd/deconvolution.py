@@ -1276,7 +1276,8 @@ class Deconvolution(object):
                         modes = self.config['initialization']['modes_std'] * torch.randn((n_seq, self.n_f, self.n_modes))
                         modes = modes.clone().detach().to(self.device).requires_grad_(True)
                 
-                if self.psf_model.lower() == 'nmf':                               
+                if self.psf_model.lower() == 'nmf':
+                    self.logger.info(f"Initializing modes with the diffraction PSF")                               
                     tmp, _ = optim.nnls(self.basis[0].reshape((self.n_modes, self.npix**2)).T.cpu().numpy(), self.psf_diffraction[0].flatten().cpu().numpy())
                     modes = torch.tensor(tmp[None, None, :].astype('float32')).expand((n_seq, self.n_f, self.n_modes))
                     modes = modes.clone().detach().to(self.device).requires_grad_(True)
