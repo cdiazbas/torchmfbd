@@ -86,7 +86,7 @@ Since several objects can be deconvolved simultaneously, one needs to define the
 starting from 1.
 
 * ``wavelength`` : wavelength of the object in angstroms
-* ``image_filter`` : Fourier filter to be used for the image. Options are ``tophat`` (a simple tophat filter to avoid frequencies above the cutoff), ``scharmer`` (the filter from Lofdahl & Scharmer 1994) or ``garrote`` (the gain of the Lofdahl & Scharmer filter used as a continuous weight, without its threshold and flood fill, so that the object changes continuously with the data).
+* ``image_filter`` : Fourier filter to be used for the image. Options are ``tophat`` (a simple tophat filter to avoid frequencies above the cutoff), ``scharmer`` (the filter from Lofdahl & Scharmer 1994) or ``garrote`` (the gain of the Lofdahl & Scharmer filter used as a continuous weight, with the threshold dropped and the flood fill replaced by a grayscale reconstruction from zero frequency, so that the object changes continuously with the data).
 * ``cutoff`` : cutoff frequency. The first element indicates the cutoff frequency below which the filter is 1. The second element marks the frequency above which the filter is 0. In between, a smooth transition is built. All are given in units of the diffraction limit.
 * ``s_u_joint`` : Estimation of the power spectrum of the object. This is relevant only if the ``joint`` loss is used.
 
@@ -216,7 +216,7 @@ Since several objects can be deconvolved simultaneously, one needs to define the
 starting from 1.
 
 * ``wavelength`` : wavelength of the object in angstroms
-* ``image_filter`` : Fourier filter to be used for the image. Options are ``tophat`` (a simple tophat filter to avoid frequencies above the cutoff), ``scharmer`` (the filter from Lofdahl & Scharmer 1994) or ``garrote`` (the gain of the Lofdahl & Scharmer filter used as a continuous weight, without its threshold and flood fill, so that the object changes continuously with the data).
+* ``image_filter`` : Fourier filter to be used for the image. Options are ``tophat`` (a simple tophat filter to avoid frequencies above the cutoff), ``scharmer`` (the filter from Lofdahl & Scharmer 1994) or ``garrote`` (the gain of the Lofdahl & Scharmer filter used as a continuous weight, with the threshold dropped and the flood fill replaced by a grayscale reconstruction from zero frequency, so that the object changes continuously with the data).
 * ``cutoff`` : cutoff frequency indicated in units of the diffraction limit
 
 optimization

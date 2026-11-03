@@ -1144,9 +1144,10 @@ class Deconvolution(object):
     def garrote_filter(self, Sconj_S, Sconj_I, sigma):
         """
         Continuous version of the Löfdahl-Scharmer filter: the gain 1 - sigma^2 sum|S|^2 / |sum S* D|^2,
-        with the ratio median-filtered over 3 x 3 frequencies, clipped to [0, 1] and used as it is, without
-        the threshold, the binarisation and the flood fill. Per frequency this is the positive-part
-        James-Stein (non-negative garrote) shrinkage of the multi-frame estimate. The gain is a continuous
+        with the ratio median-filtered over 3 x 3 frequencies and clipped to [0, 1], is used as a weight instead
+        of being thresholded and binarised, and the flood fill from zero frequency is replaced by its
+        continuous counterpart (reconstruct_from_zero_frequency). Per frequency the gain is the positive-part
+        James-Stein (non-negative garrote) shrinkage of the multi-frame estimate. The result is a continuous
         function of the data, so a small change of the frames gives a small change of the object.
 
         Parameters:
@@ -1193,7 +1194,43 @@ class Deconvolution(object):
             p[a], p[b] = torch.minimum(p[a], p[b]), torch.maximum(p[a], p[b])
         H = p[4]
 
-        return torch.nan_to_num(torch.clamp(1.0 - H * s2, min=0.0, max=1.0), nan=0.0)
+        gain = torch.nan_to_num(torch.clamp(1.0 - H * s2, min=0.0, max=1.0), nan=0.0)
+
+        return self.reconstruct_from_zero_frequency(gain)
+
+    def reconstruct_from_zero_frequency(self, gain):
+        """
+        Grayscale morphological reconstruction of a gain from the zero frequency (Vincent 1993): for every
+        frequency, the largest over 8-connected paths from zero frequency of the smallest gain along the path.
+        Islands of gain that are not connected to zero frequency are removed, and gain behind a narrow gap is
+        limited by the gap. Thresholding the result at any level gives the flood fill from zero frequency of
+        the gain above that level, which is what the Löfdahl-Scharmer filter does at the level 0.2; unlike the
+        flood fill, the reconstruction is a continuous function of the gain.
+
+        Parameters:
+        -----------
+        gain : torch.Tensor
+            Gain in the unshifted frequency layout, shape (n_seq, nx, ny).
+
+        Returns:
+        --------
+        torch.Tensor
+            The reconstructed gain, same shape, never above the input.
+        """
+        nx, ny = gain.shape[-2], gain.shape[-1]
+        g = torch.fft.fftshift(gain, dim=(-2, -1))[:, None, :, :]
+        r = torch.zeros_like(g)
+        r[..., nx // 2, ny // 2] = g[..., nx // 2, ny // 2]
+
+        # Geodesic dilation until nothing changes; the iterates only take values of g and never decrease, so
+        # the loop ends exactly, after about the length of the longest path (20-35 steps for 64 px patches)
+        for _ in range(nx * ny):
+            r_new = torch.minimum(F.max_pool2d(F.pad(r, (1, 1, 1, 1), mode='circular'), 3, stride=1), g)
+            if torch.equal(r_new, r):
+                break
+            r = r_new
+
+        return torch.fft.ifftshift(r[:, 0], dim=(-2, -1))
 
     def get_su_s2(self, obj, sigma, pars_s0=None, pars_s2=None, frames_mean=None):
         """

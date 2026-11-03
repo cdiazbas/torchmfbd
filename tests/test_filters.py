@@ -1,6 +1,8 @@
 import torchmfbd
 import torch
+import numpy as np
 import yaml
+from skimage.segmentation import flood
 from pathlib import Path
 
 def _config(image_filter):
@@ -60,6 +62,43 @@ def test_garrote_gain(make_synthetic_frames):
     Sconj_I_pert = Sconj_I * (1.0 + 1e-7 * torch.randn(Sconj_I.shape, generator=torch.Generator().manual_seed(3)))
     change = torch.max(torch.abs(dec.garrote_filter(Sconj_S, Sconj_I_pert, s2) - gain))
     assert change < 1e-4, f'Gain changed by {change.item()} under a 1e-7 change of the data'
+
+    # The reconstruction thresholded at a level is the flood fill from zero frequency of the gain above it
+    raw = dec.garrote_filter.__func__
+    dec.reconstruct_from_zero_frequency = lambda g: g
+    gain_raw = raw(dec, Sconj_S, Sconj_I, s2)
+    del dec.reconstruct_from_zero_frequency
+    for level in (0.2, 0.5):
+        for b in range(gain.shape[0]):
+            g_shift = torch.fft.fftshift(gain_raw[b]).numpy() >= level
+            ff = flood(g_shift.astype(np.uint8), (16, 16), footprint=np.ones((3, 3)), tolerance=0)
+            rec = torch.fft.fftshift(gain[b]).numpy() >= level
+            assert np.array_equal(rec, ff), f'Reconstruction above {level} differs from the flood fill in {int((rec != ff).sum())} frequencies'
+
+def test_reconstruction():
+
+    config_path, config = _config('garrote')
+    config['optimization']['gpu'] = -1
+    dec = torchmfbd.Deconvolution(config)
+
+    # Gain 0.9 in a disc around zero frequency and in an island separated from it, 0 elsewhere
+    n = 32
+    k = torch.fft.fftfreq(n) * n
+    kx, ky = torch.meshgrid(k, k, indexing='ij')
+    disc = (kx**2 + ky**2) <= 5**2
+    island = ((kx - 11)**2 + (ky - 3)**2) <= 2**2
+    gain = 0.9 * (disc | island).float()[None]
+
+    rec = dec.reconstruct_from_zero_frequency(gain)
+    assert torch.equal(rec[0][disc], gain[0][disc]), 'Gain connected to zero frequency was changed'
+    assert torch.all(rec[0][island] == 0.0), 'Island not connected to zero frequency was kept'
+
+    # A narrow gap limits what lies behind it to the gain of the gap
+    gain[0][island] = 0.9
+    bridge = (kx >= 5) & (kx <= 9) & (ky == 3)
+    gain[0][bridge] = 0.3
+    rec = dec.reconstruct_from_zero_frequency(gain)
+    assert torch.allclose(rec[0][island], torch.tensor(0.3)), f'Gain behind a 0.3 gap is {rec[0][island].unique().tolist()}'
 
 def test_garrote_object(make_synthetic_frames, object_error):
 
