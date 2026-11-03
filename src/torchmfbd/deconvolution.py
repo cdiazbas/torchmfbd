@@ -491,6 +491,12 @@ class Deconvolution(object):
         
         loop = 0
 
+        # lambda_t of filter_loss wiener_time*; 0 unless a `time` entry sets it (lambda = 0 is a valid control run)
+        self.time_regularization = 0.0
+        for k, v in self.config['regularization'].items():
+            if 'time' in k:
+                self.time_regularization = float(v['lambda'])
+
         for k, v in self.config['regularization'].items():            
             if v['lambda'] != 0.0:
                 
@@ -498,9 +504,6 @@ class Deconvolution(object):
                     tmp = RegularizationSmooth(lambda_reg=v['lambda'], variable=v['variable'])
                 if 'iuwt' in k:
                     tmp = RegularizationIUWT(lambda_reg=v['lambda'], variable=v['variable'], nbands=v['nbands'], n_pixel=self.npix)
-                if 'time' in k:                    
-                    self.time_regularization = float(v['lambda'])
-
                 if 'time' not in k:
                     self.regularization.append(tmp.to(self.device))
                     self.index_regularization[v['variable']].append(loop)
@@ -1135,12 +1138,23 @@ class Deconvolution(object):
         sum_S_sq_flat = torch.sum(torch.abs(S)**2, dim=1).reshape(M, B)
         RHS = torch.sum(torch.conj(S) * D, dim=1).reshape(M, B)
         reg_s_flat = (lambda_s * Reg_Space).flatten()
+
+        # A single time step has no temporal neighbours: the system is diagonal (same floor as the
+        # non-time scharmer estimate, so frequencies without data give 0 instead of 0/0)
+        if M == 1:
+            return (RHS / (sum_S_sq_flat + reg_s_flat + 1e-10)).reshape(M, Nx, Ny)
+
+        # The recursion runs in complex128 where the device has it. In complex64 the Neumann system is
+        # exactly singular at frequencies without data (sum|S|^2 = 0 beyond the cutoff): the last pivot
+        # cancels to 0 and the 0/0 survives the diffraction mask as NaN (measured 2026-11-03).
+        # MPS has no complex128; there the recursion is complex64 (untested: MPS is never selected).
+        work = torch.complex64 if S.device.type == 'mps' else torch.complex128
         
         # 2. Build Full Arrays for Diagonals out-of-place
         # Explicitly tracking lower (a) and upper (c) arrays as requested
         if lambda_t_variable:
-            a = -lambda_t.unsqueeze(1).expand(M - 1, B).to(torch.complex128).to(S.device)
-            c = -lambda_t.unsqueeze(1).expand(M - 1, B).to(torch.complex128).to(S.device)
+            a = -lambda_t.unsqueeze(1).expand(M - 1, B).to(work).to(S.device)
+            c = -lambda_t.unsqueeze(1).expand(M - 1, B).to(work).to(S.device)
 
                 # Build main diagonal list of rows safely
             d_rows = []
@@ -1155,8 +1169,8 @@ class Deconvolution(object):
                 d_rows.append(row)
 
         else:
-            a = torch.full((M - 1, B), -lambda_t, dtype=torch.complex128, device=S.device)
-            c = torch.full((M - 1, B), -lambda_t, dtype=torch.complex128, device=S.device)
+            a = torch.full((M - 1, B), -lambda_t, dtype=work, device=S.device)
+            c = torch.full((M - 1, B), -lambda_t, dtype=work, device=S.device)
         
             # Build main diagonal list of rows safely
             d_rows = []
@@ -1197,7 +1211,9 @@ class Deconvolution(object):
             
         # 5. Build Final Tensor Output 
         O_flat = torch.stack(O_list, dim=0)
-        return O_flat.reshape(M, Nx, Ny)
+
+        # Objects in the precision of the input (float32 runs gave float64 objects)
+        return O_flat.reshape(M, Nx, Ny).to(S.dtype)
     
     def compute_object(self, images_ft, otf, sigma, plane, type_filter='tophat', pars_s0=None, pars_s2=None):
         """
@@ -1300,7 +1316,7 @@ class Deconvolution(object):
                 out_filter[i] = torch.clamp(out_filter[i], min=0.0)
             
             # Add the gradient that we removed
-            if self.remove_gradient_apodization:
+            if self.remove_gradient_apodization and plane is not None:
                  out_filter[i] += plane[i][:, 0, :, :]
         
         return out_ft, out_filter_ft, out_filter
@@ -1644,7 +1660,10 @@ class Deconvolution(object):
             sigma = noise.compute_noise(frames).to(self.device)
             self.logger.info(f"   * Average noise: {torch.mean(sigma)}")            
         else:
-            sigma = torch.tensor(sigma).to(self.device)
+            sigma = torch.as_tensor(sigma, dtype=torch.float32)
+            if self.time_present and sigma.ndim == 3:
+                sigma = rearrange(sigma, 's t f -> (s t) f', t=self.n_t, s=self.n_seq)
+            sigma = sigma.to(self.device)
 
         self.ind_object.append(id_object)        
         self.ind_diversity.append(id_diversity)
@@ -1951,7 +1970,7 @@ class Deconvolution(object):
             A list containing the split chunks of the sequence.
         """
         if N > K:
-            raise ValueError("N cannot be greater than K")
+            raise ValueError(f"simultaneous_sequences = {K} is smaller than the number of time steps n_t = {N}: a batch must hold whole time series")
             
         sequence = list(range(M))
         # Calculate the largest multiple of N that is <= K

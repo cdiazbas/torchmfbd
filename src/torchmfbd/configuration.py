@@ -61,6 +61,10 @@ def _check_config(config):
         if config["optimization"]["filter_loss"] not in ["wiener", "wiener_time", "wiener_time_contrast", "lowpass"]:
             raise ValueError(f"Invalid value for filter_loss. It is {config['optimization']['filter_loss']} but should be wiener, wiener_time, wiener_time_contrast or lowpass")
 
+    # The time-coupled filters solve for an explicit object; the marginal loss has no term for them
+    if config["optimization"].get("filter_loss", "wiener") in ["wiener_time", "wiener_time_contrast"] and config["optimization"]["loss_type"] == "marginal":
+        raise ValueError(f"filter_loss {config['optimization']['filter_loss']} is only implemented for loss_type joint, not marginal")
+
     if "regularization" not in config or config["regularization"] is None:
         config["regularization"] = {}
 
