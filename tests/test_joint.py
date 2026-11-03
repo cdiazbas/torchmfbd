@@ -68,7 +68,7 @@ def test_time_4d(make_synthetic_frames):
 
     assert torch.all(torch.isfinite(decSI.loss)), f'Non-finite loss at iterations {torch.where(~torch.isfinite(decSI.loss))[0].tolist()}'
 
-    out = decSI.obj[0]
+    out = decSI.obj[0].cpu()
     assert out.shape == (n_seq, 32, 32), f'Expected {(n_seq, 32, 32)}, got {out.shape}'
     assert out.dtype == torch.float32, f'Expected float32, got {out.dtype}'
     assert torch.all(torch.isfinite(out)), 'Non-finite object'
@@ -95,6 +95,10 @@ def test_time_5d(make_synthetic_frames):
                      simultaneous_sequences=200,
                      n_iterations=20)
 
-    out = decSI.obj[0]
+    assert torch.all(torch.isfinite(decSI.loss)), f'Non-finite loss at iterations {torch.where(~torch.isfinite(decSI.loss))[0].tolist()}'
+
+    out = decSI.obj[0].cpu()
     assert out.shape == (1, n_seq, 32, 32), f'Expected {(1, n_seq, 32, 32)}, got {out.shape}'
     assert out.dtype == torch.float32, f'Expected float32, got {out.dtype}'
+    assert torch.all(torch.isfinite(out)), 'Non-finite object'
+    assert torch.allclose(out.mean(dim=(-1, -2)), frames.mean(dim=(-1, -2, -3))[None, :], rtol=0.05), f'Object mean {out.mean(dim=(-1, -2)).tolist()}, frames mean {frames.mean(dim=(-1, -2, -3)).tolist()}'

@@ -1,5 +1,6 @@
 import pytest
 import torch
+import yaml
 import torchmfbd
 
 @pytest.fixture
@@ -14,6 +15,11 @@ def make_synthetic_frames():
 
         gen = torch.Generator().manual_seed(seed)
 
+        # The data are generated on the CPU whatever device the configuration asks for
+        if not isinstance(config, dict):
+            with open(config) as f:
+                config = yaml.safe_load(f)
+        config['optimization']['gpu'] = -1
         dec = torchmfbd.Deconvolution(config)
         npix = dec.npix
 
@@ -55,14 +61,14 @@ def object_error():
         true object, all seen through the diffraction mask of the run and without the apodized border.
         """
 
-        mask = dec.mask_diffraction_th[0]
+        mask = dec.mask_diffraction_th[0].cpu()
         truth = torch.fft.ifft2(torch.fft.fft2(obj) * mask).real
         frames_filtered = torch.fft.ifft2(torch.fft.fft2(frames) * mask).real
 
         b = dec.npix_apod
         inner = (..., slice(b, -b), slice(b, -b))
 
-        err_obj = torch.sqrt(torch.mean((dec.obj[0] - truth)[inner]**2, dim=(-1, -2)))
+        err_obj = torch.sqrt(torch.mean((dec.obj[0].cpu() - truth)[inner]**2, dim=(-1, -2)))
         err_frames = torch.sqrt(torch.mean((frames_filtered - truth[:, None, :, :])[inner]**2, dim=(-1, -2)))
 
         return err_obj, torch.min(err_frames, dim=1).values
