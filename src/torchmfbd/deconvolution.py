@@ -193,6 +193,14 @@ class Deconvolution(object):
         if self.loss_type == 'marginal':
             self.stop_psd = self.config['optimization'].get('stop_psd_optimization', 1000)
 
+        # Optional stopping rule (off by default): stop a batch once the relative change of the loss stays
+        # below `tolerance` for `patience` iterations, counted only after the annealing has reached all modes
+        self.tolerance = self.config['optimization'].get('tolerance', None)
+        self.patience = int(self.config['optimization'].get('patience', 3))
+
+        # Inner iterations of one LBFGS step (torch's default 20; one step costs about max_iter + line search closures)
+        self.lbfgs_max_iter = int(self.config['optimization'].get('lbfgs_max_iter', 20))
+
         # Hard bounds of the PSD exponent p (s_u ~ (1 + (v/v0)^2)^(-p/2)): unbounded, p ran to infinity
         # under LBFGS while the loss stayed finite
         self.log_p_bounds = (float(np.log(0.5)), float(np.log(10.0)))
@@ -2589,7 +2597,7 @@ class Deconvolution(object):
                         params_lbfgs.append(group['params'])
                     else:
                         params_lbfgs.append(group)
-                opt = torch.optim.LBFGS(params_lbfgs, lr=self.lr_modes, line_search_fn='strong_wolfe')
+                opt = torch.optim.LBFGS(params_lbfgs, lr=self.lr_modes, line_search_fn='strong_wolfe', max_iter=self.lbfgs_max_iter)
             if optimizer == 'adam':
                 self.logger.info(f"Using Adam optimizer...")
                 opt = torch.optim.Adam(parameters)
@@ -2630,6 +2638,7 @@ class Deconvolution(object):
             # Last parameters at which the loss was finite, restored if the optimisation diverges
             last_good = [p.detach().clone() for g in opt.param_groups for p in g['params']]
             psd_frozen = False
+            n_small, n_active_previous = 0, -1
                 
             for loop in t:
                                 
@@ -2772,6 +2781,20 @@ class Deconvolution(object):
 
                 losses[loop] = loss.detach()
 
+                # Stopping rule, armed once the schedule has reached its final number of modes
+                if self.tolerance is not None:
+                    if n_active_fit == self.anneal[-1] and loop > 0 and torch.isfinite(losses[loop - 1]) and \
+                            n_active_previous == n_active_fit:
+                        rel_change = float(torch.abs(losses[loop] - losses[loop - 1]) / (torch.abs(losses[loop - 1]) + 1e-30))
+                        n_small = n_small + 1 if rel_change < self.tolerance else 0
+                    else:
+                        n_small = 0
+                    n_active_previous = n_active_fit
+                    if n_small >= self.patience:
+                        self.logger.info(f"Converged at iteration {loop}: relative change below tolerance {self.tolerance} for {self.patience} iterations")
+                        losses = losses[0:loop + 1]
+                        break
+
                 loss_data = self.loss_data_local
                 loss_prior = self.loss_prior_local
                 loss = self.loss_local
@@ -2838,7 +2861,7 @@ class Deconvolution(object):
                     if optimizer == 'lbfgs':
                         # LBFGS keeps all parameters in one group: rebuild it without the frozen ones
                         opt = torch.optim.LBFGS([p for p in params_lbfgs if all(p is not f for f in frozen)],
-                                                lr=self.lr_modes, line_search_fn='strong_wolfe')
+                                                lr=self.lr_modes, line_search_fn='strong_wolfe', max_iter=self.lbfgs_max_iter)
                     else:
                         for g in opt.param_groups:
                             if any(p is f for p in g['params'] for f in frozen):
