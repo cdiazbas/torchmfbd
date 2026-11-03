@@ -85,7 +85,7 @@ class DeconvolutionSV(Deconvolution):
                     self.logger.info(f"  * Applying 'fat wing' power: {basis_power}")
                     self.psf_modes = (self.psf_modes + 1e-12)**basis_power
 
-                # Normalize the modes to unit area (an all-zero mode stays zero instead of 0/0)
+                # Normalize the modes to unit area (an all-zero mode stays zero)
                 self.psf_modes /= (np.sum(self.psf_modes, axis=(1, 2), keepdims=True) + 1e-12)
 
                 self.logger.info(f"Computing NMF coefficients of diffraction PSF")            
@@ -437,7 +437,7 @@ class DeconvolutionSV(Deconvolution):
                 s2_mean = torch.mean(self.sigma[i][seq, ...]**2, dim=1, keepdim=True)
                 weight_seq.append(s2_mean / (self.sigma[i][seq, ...]**2 + 1e-10))
 
-            # Sequences in this batch (the tip-tilt and modes were allocated for all sequences)
+            # Sequences in this batch: tip-tilt and modes are allocated per batch
             n_seq = len(seq)
                         
             # Initial estimation of the object: average of all frames
@@ -649,7 +649,7 @@ class DeconvolutionSV(Deconvolution):
                 tiptilt = tiptilt_infer
                 modes = modes_infer
 
-            # Add back the gradient plane that was subtracted during apodization (BUG-49)
+            # Add back the gradient plane that was subtracted during apodization
             # Mirrors base class compute_object: out_filter[i] += plane[i][:, 0, :, :]
             if self.remove_gradient_apodization:
                 for i in range(self.n_o):

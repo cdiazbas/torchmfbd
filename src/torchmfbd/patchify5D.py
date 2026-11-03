@@ -90,7 +90,7 @@ class Patchify5D(object):
             x = x[:, :, :, apodization:-apodization, apodization:-apodization]
             mask = mask[:, :, :, apodization:-apodization, apodization:-apodization]
 
-        # Size covered by the patches (pixels beyond the last full patch have no patch: 0/0 = NaN before)
+        # Size covered by the patches: pixels beyond the last full patch belong to no patch
         Lx = (self.output_size[0] - self.patch_size) // self.stride_size + 1
         Ly = (self.output_size[1] - self.patch_size) // self.stride_size + 1
         output_size = ((Lx - 1) * self.stride_size + self.patch_size - 2*apodization,

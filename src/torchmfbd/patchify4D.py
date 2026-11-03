@@ -140,7 +140,7 @@ class Patchify4D(object):
         elif weight_type == 'cosine':
             npix_apod = min(weight_params, npix//2)
             # Hann taper without its zero end points: a pixel covered by a single patch (mosaic
-            # border, seams when stride = patch size) keeps a non-zero weight instead of 0/0
+            # border, seams when stride = patch size) keeps a non-zero weight
             win = np.hanning(2*npix_apod + 2)[1:-1]
             winOut = np.ones(npix)
             winOut[0:npix_apod] = win[0:npix_apod]

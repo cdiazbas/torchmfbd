@@ -1159,13 +1159,13 @@ class Deconvolution(object):
         reg_s_flat = (lambda_s * Reg_Space).flatten()
 
         # A single time step has no temporal neighbours: the system is diagonal (same floor as the
-        # non-time scharmer estimate, so frequencies without data give 0 instead of 0/0)
+        # non-time scharmer estimate, so frequencies without data give 0, not 0/0)
         if M == 1:
             return (RHS / (sum_S_sq_flat + reg_s_flat + 1e-10)).reshape(M, Nx, Ny)
 
         # The recursion runs in complex128 where the device has it. In complex64 the Neumann system is
         # exactly singular at frequencies without data (sum|S|^2 = 0 beyond the cutoff): the last pivot
-        # cancels to 0 and the 0/0 survives the diffraction mask as NaN (measured 2026-11-03).
+        # cancels to 0 and the 0/0 survives the diffraction mask as NaN.
         # MPS has no complex128; there the recursion is complex64 (untested: MPS is never selected).
         work = torch.complex64 if S.device.type == 'mps' else torch.complex128
         
@@ -1231,7 +1231,7 @@ class Deconvolution(object):
         # 5. Build Final Tensor Output 
         O_flat = torch.stack(O_list, dim=0)
 
-        # Objects in the precision of the input (float32 runs gave float64 objects)
+        # Objects in the precision of the input
         return O_flat.reshape(M, Nx, Ny).to(S.dtype)
     
     def compute_object(self, images_ft, otf, sigma, plane, type_filter='tophat', pars_s0=None, pars_s2=None):
@@ -1938,7 +1938,7 @@ class Deconvolution(object):
                 # Compute final degraded images
                 degraded_ft = obj_filter_ft[i][:, None, :, :] * otf[i]
                 # obj_filter_ft is the unnormalised DFT of the object and otf the ortho OTF, so the product
-                # is the ortho spectrum of the degraded image (the default norm returned it 1/npix too low)
+                # is the ortho spectrum of the degraded image, so it is inverted with the same norm
                 degraded[i] = torch.fft.ifft2(degraded_ft, norm=self.fft_norm).real
                         
             for i in range(self.n_o):
@@ -2517,10 +2517,9 @@ class Deconvolution(object):
 
             t = tqdm(range(n_iterations))
 
-            # zernike/kl start at the schedule's first value. nmf/vae start with all modes and drop to the
-            # schedule after the first step (audit v3 BUG-36, BUG-118): left as is on purpose, because
-            # starting the vae at 2 latents with zero-initialised latents (modes_std = 0, the shipped
-            # vae.yaml) was measured to triple the error vs a known truth (1.48 vs 0.59, 3 scenes)
+            # zernike/kl start at the schedule's first value; nmf/vae fit all modes in the first step and
+            # follow the schedule afterwards. Starting the vae at the schedule's first value with latents
+            # initialised at zero gives much worse objects on synthetic data with a known truth.
             if self.psf_model.lower() in ['zernike', 'kl']:
                 n_active = int(self.anneal[0])
             else:
@@ -2575,7 +2574,7 @@ class Deconvolution(object):
                             degraded_ft = obj_ft[i][:, None, :, :] * otf[i]
 
                             # Chi^2 with per-frame noise variances: 0.5 * sum_j |D_j - O S_j|^2 / sigma_j^2,
-                            # averaged over sequences and frequencies (the joint data term before the
+                            # averaged over sequences and frequencies (the joint data term without the
                             # object is eliminated). With the ortho FFT the noise variance per frequency
                             # is sigma^2, so the loss is O(n_f) at the solution and Adam's eps is irrelevant.
                             residual = degraded_ft - frames_ft[i]
@@ -2590,7 +2589,7 @@ class Deconvolution(object):
                         pars_s0_arg = pars_s0_torch if self.loss_type == 'marginal' else None
                         pars_s2_arg = pars_s2_torch if (self.loss_type == 'marginal' and 'psd' in self.config) else None
 
-                        # The object is needed for the progress bar and for any object regularization (BUG-06)
+                        # The object is needed for the progress bar and for any object regularization
                         if self.show_object_info or len(self.index_regularization['object']) > 0:
                             obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, 
                                                                                     otf, 
@@ -2743,7 +2742,7 @@ class Deconvolution(object):
                 # Compute final degraded images
                 degraded_ft = obj_filter_ft[i][:, None, :, :] * otf[i]
                 # obj_filter_ft is the unnormalised DFT of the object and otf the ortho OTF, so the product
-                # is the ortho spectrum of the degraded image (the default norm returned it 1/npix too low)
+                # is the ortho spectrum of the degraded image, so it is inverted with the same norm
                 degraded[i] = torch.fft.ifft2(degraded_ft, norm=self.fft_norm).real
             
             # Store the results for the current set of sequences

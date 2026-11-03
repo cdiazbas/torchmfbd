@@ -32,8 +32,8 @@ def warp(image, flow_AB, mode='bilinear'):
     del xx, yy, grid
 
     # Normalise pixel coordinates with the convention of align_corners=False (pixel centres at
-    # (2x+1)/W - 1), so that a zero flow is the identity. 2x/(W-1) - 1 is the align_corners=True
-    # convention; mixed with False it magnified the image by W/(W-1) and low-passed it on every call.
+    # (2x+1)/W - 1), so that a zero flow is the identity. 2x/(W-1) - 1 belongs to align_corners=True;
+    # mixed with False it magnifies the image by W/(W-1) and resamples it off the pixel centres.
     vgrid[:,0,:,:] = (2.0*vgrid[:,0,:,:] + 1.0) / W - 1.0
 
     vgrid[:,1,:,:] = (2.0*vgrid[:,1,:,:] + 1.0) / H - 1.0
