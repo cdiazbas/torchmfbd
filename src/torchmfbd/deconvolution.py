@@ -1160,9 +1160,10 @@ class Deconvolution(object):
         # burst, so that worse images are more regularized than better ones.
         lambda_t_variable = False
         if contrast is not None:            
+            # The edge (t, t+1) is weighted by both of its ends (geometric mean of their normalised contrasts),
+            # so the result does not depend on the direction of time
             contrast_normalized = contrast / torch.min(contrast)
-            lambda_t = lambda_t / contrast_normalized**2
-            lambda_t = lambda_t[0: -1]
+            lambda_t = lambda_t / (contrast_normalized[0:-1] * contrast_normalized[1:])
             lambda_t_variable = True
         
         M, J, Nx, Ny = S.shape
@@ -1300,43 +1301,52 @@ class Deconvolution(object):
                 s2_term = s2[:, None, None] if hasattr(s2, 'dim') and s2.dim() > 0 else s2
                 s2_filt = s2[:, None] if hasattr(s2, 'dim') and s2.dim() > 0 else s2
 
+            time_coupled = self.loss_filter == 'wiener_time' or self.loss_filter == 'wiener_time_contrast'
+            if time_coupled and self.enforce_positive_object:
+                raise ValueError("enforce_positive_object is not available with the time-coupled filters: the positivity ADMM has no time coupling")
+
+            if time_coupled:
+                # Spatial regularisation of the time solve: none for scharmer (the L&S mask selects the
+                # frequencies), s2/s_u for tophat, so that lambda_t -> 0 gives back each filter's estimate
+                if self.image_filter[i] == 'scharmer':
+                    Reg_Space, lambda_s = torch.zeros_like(Sconj_S[0, ...].real), 0.0
+                else:
+                    reg = s2_term / s_u
+                    if torch.is_tensor(reg) and reg.dim() == 3:
+                        reg = reg[0]
+                    Reg_Space, lambda_s = reg * torch.ones_like(Sconj_S[0, ...].real), 1.0
+
+                # Per-frame weights gamma enter as sqrt(gamma) on both S and D: sum gamma|S|^2, sum gamma S* D
+                w = torch.sqrt(gamma)
+                otf_tmp = rearrange(w * otf[i], '(s t) f w h -> s t f w h', t=self.n_t)
+                images_tmp = rearrange(w * images_ft[i], '(s t) f w h -> s t f w h', t=self.n_t)
+                images_raw = rearrange(images_ft[i], '(s t) f w h -> s t f w h', t=self.n_t)
+                n_seq = images_tmp.shape[0]                    
+                out = []
+                for j in range(n_seq):
+                    if self.loss_filter == 'wiener_time_contrast':
+                        mn_f = torch.mean(images_raw[j, :, :, 0, 0], dim=-1) / self.npix**2
+                        tmp = torch.sum(torch.abs(images_raw[j, :, ...])**2, dim=(-1, -2)) - images_raw[j, :, :, 0, 0].real**2
+                        tmp = torch.mean(tmp, dim=-1)
+                        std_f = torch.sqrt(tmp / self.npix**4)
+
+                        contrast = (std_f / mn_f).real
+                    else:
+                        contrast = None
+                    
+                    tmp = self.solve_object_time_evolution(otf_tmp[j, ...], images_tmp[j, ...], Reg_Space, lambda_s, self.time_regularization, contrast=contrast)
+                    out.append(tmp[None, ...])
+                out = torch.cat(out, dim=0)
+                time_ft = rearrange(out, 's t w h -> (s t) w h')
+
             # Use Lofdahl & Scharmer (1994) filter
             if (self.image_filter[i] == 'scharmer'):
                 mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, s2_filt.detach()) * self.mask_diffraction_th[i][None, :, :]
                 
-                if self.loss_filter == 'wiener_time' or self.loss_filter == 'wiener_time_contrast':
-                    Reg_Space = torch.ones_like(Sconj_S[0, ...]).to(self.device)
-
-                    otf_tmp = rearrange(otf[i], '(s t) f w h -> s t f w h', t=self.n_t)
-                    images_tmp = rearrange(images_ft[i], '(s t) f w h -> s t f w h', t=self.n_t)
-                    n_seq = images_tmp.shape[0]                    
-                    out = []
-                    for j in range(n_seq):
-                        # images = torch.fft.ifft2(images_tmp[j, :, ...]).real
-                        # mn = torch.mean(images, dim=(-1, -2, -3))
-                        # std = torch.std(images, dim=(-1, -2, -3))
-                        # print(mn, std)                        
-                        if self.loss_filter == 'wiener_time_contrast':
-                            mn_f = torch.mean(images_tmp[j, :, :, 0, 0], dim=-1) / self.npix**2
-                            tmp = torch.sum(torch.abs(images_tmp[j, :, ...])**2, dim=(-1, -2)) - images_tmp[j, :, :, 0, 0].real**2
-                            tmp = torch.mean(tmp, dim=-1)
-                            std_f = torch.sqrt(tmp / self.npix**4)
-
-                            contrast = (std_f / mn_f).real
-                        else:
-                            contrast = None
-                        
-                        tmp = self.solve_object_time_evolution(otf_tmp[j, ...], images_tmp[j, ...], Reg_Space, 0.0, self.time_regularization, contrast=contrast)
-                        out.append(tmp[None, ...])
-                    out = torch.cat(out, dim=0)
-                    out = rearrange(out, 's t w h -> (s t) w h')
-                    out_ft[i] = out
-                    
-                    # out_ft[i] = s_u[None, ...] * Sconj_I / (s_u[None, ...] * Sconj_S + s2_term)
-                    
+                if time_coupled:
+                    out_ft[i] = time_ft
                 else:
                     out_ft[i] = Sconj_I / (Sconj_S + 1e-10)
-                    # out_ft[i] = s_u[None, ...] * Sconj_I / (s_u[None, ...] * Sconj_S + s2_term)
                             
                 out_filter_ft[i] = out_ft[i] * mask
 
@@ -1346,7 +1356,10 @@ class Deconvolution(object):
                 
             # Use simple Wiener filter with tophat prior            
             if (self.image_filter[i] == 'tophat'):
-                out_ft[i] = Sconj_I / (Sconj_S + s2_term / s_u)
+                if time_coupled:
+                    out_ft[i] = time_ft
+                else:
+                    out_ft[i] = Sconj_I / (Sconj_S + s2_term / s_u)
                 
                 out_filter_ft[i] = out_ft[i] * self.mask_diffraction_th[i][None, :, :]
 
