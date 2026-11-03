@@ -3,9 +3,9 @@ telescope:
     central_obscuration : 0.0
 
 images:
-    n_pixel : 16
+    n_pixel : 32
     pix_size : 0.059
-    apodization_border : 2
+    apodization_border : 3
 
 object1:
     wavelength : 8542.0
