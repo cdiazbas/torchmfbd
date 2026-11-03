@@ -1182,7 +1182,8 @@ class Deconvolution(object):
         # system singular; their solution is undefined and masked out later. They are solved as an
         # identity row and set to 0, so the last pivot cannot be 0/0 and NaN cannot reach the object.
         lt_max = float(torch.max(torch.as_tensor(lambda_t))) if lambda_t_variable else float(lambda_t)
-        no_data = torch.sum(sum_S_sq_flat, dim=0) <= 1e-6 * lt_max
+        w_freq = torch.sum(sum_S_sq_flat, dim=0)
+        no_data = (w_freq <= 1e-6 * lt_max) | (w_freq <= 1e-10 * torch.max(w_freq))
         if torch.any(no_data):
             sum_S_sq_flat = torch.where(no_data[None, :], torch.ones_like(sum_S_sq_flat), sum_S_sq_flat)
 
