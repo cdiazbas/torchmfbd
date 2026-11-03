@@ -78,6 +78,7 @@ images
 * ``n_pixel`` : size in pixels of the images to be deconvolved. In case the images are mosaicked to take into account the size of the anisoplanatic patch, this keyword gives the size of the patches
 * ``pix_size`` : pixel size in arcsec
 * ``apodization_border`` : border of the apodization in pixels to avoid edge effects in the Fourier transform used for the convolution
+* ``remove_fixed_pattern`` : if True (the default), a pattern fixed on the detector is removed from each burst passed to ``add_frames``: the frequencies above 0.75 of the diffraction cutoff where the frames agree with each other (coherence across frames, which solar structure near the cutoff does not have) are taken as pattern and their mean over frames is subtracted. Such a pattern is not blurred by the telescope, so the deconvolution would otherwise amplify it near the cutoff into stripes. It needs at least 12 frames per burst (it is skipped, with a warning, below that) and frames in detector coordinates: on registered or destretched frames the pattern moves and is not found. The patterns found are kept in ``fixed_pattern``; ``torchmfbd.util.remove_fixed_pattern`` applies it to any burst.
 
 objects
 ^^^^^^^
@@ -207,6 +208,7 @@ images
 * ``n_pixel`` : size in pixels of the images to be deconvolved. In case the images are mosaicked to take into account the size of the anisoplanatic patch, this keyword gives the size of the patches
 * ``pix_size`` : pixel size in arcsec
 * ``apodization_border`` : border of the apodization in pixels to avoid edge effects in the Fourier transform used for the convolution
+* ``remove_fixed_pattern`` : if True (the default), a pattern fixed on the detector is removed from each burst passed to ``add_frames``: the frequencies above 0.75 of the diffraction cutoff where the frames agree with each other (coherence across frames, which solar structure near the cutoff does not have) are taken as pattern and their mean over frames is subtracted. Such a pattern is not blurred by the telescope, so the deconvolution would otherwise amplify it near the cutoff into stripes. It needs at least 12 frames per burst (it is skipped, with a warning, below that) and frames in detector coordinates: on registered or destretched frames the pattern moves and is not found. The patterns found are kept in ``fixed_pattern``; ``torchmfbd.util.remove_fixed_pattern`` applies it to any burst.
 * ``remove_gradient_apodization`` : if True, the gradient of the image is removed before the apodization. This is useful to remove artifacts when the images have strong gradients
 
 objects

@@ -156,6 +156,76 @@ def apodize(frames, window, gradient=False):
     return frames_apodized, plane    
     
 
+def remove_fixed_pattern(frames, cutoff, coherence=0.5, power=2.0, rho_min=0.75, chunk=8):
+    """
+    Removes a pattern fixed on the detector from bursts of frames. Such a pattern is added after the telescope,
+    so the frames do not blur it, and multi-frame deconvolution can only explain it as object structure divided
+    by the OTF: near the diffraction cutoff it comes out as strong stripes. It is found as the frequencies where
+    the frames of a burst agree with each other: solar structure near the cutoff changes with the seeing from
+    frame to frame (coherence ~0.06), a pattern on the detector does not.
+
+    For each burst, the frames are mirror-extended (so that the jump between opposite edges does not ring) and
+    Fourier transformed. A frequency is taken as pattern where its coherence across frames,
+    |mean_j F_j|^2 / mean_j |F_j|^2, exceeds `coherence`, its power exceeds `power` times the median of its ring,
+    and it lies above `rho_min` times the diffraction cutoff (below that, solar structure is coherent too). The
+    two thresholds are linear ramps (coherence +-0.1 and power +-0.5 around them) rather than steps, so the
+    result is a continuous function of the frames. The mean over frames at those frequencies, so weighted, is the
+    pattern, subtracted from every frame. The noise is left as it is, also beyond the cutoff, where the noise is
+    estimated.
+
+    The frames must not have been registered or destretched: the pattern then moves from frame to frame and is
+    not found. With fewer than about 12 frames the coherence of noise alone becomes too high (measured with 6:
+    285 false frequencies, 7 % of the solar power near the cutoff removed).
+
+    Args:
+        frames (torch.Tensor): bursts, shape (n_seq, n_frames, nx, ny), in detector coordinates.
+        cutoff (float): the diffraction cutoff in cycles per pixel, pixel size / (lambda / D).
+        coherence (float, optional): coherence threshold. Default 0.5.
+        power (float, optional): power threshold, in units of the median power of the ring. Default 2.
+        rho_min (float, optional): lowest frequency considered, in units of the cutoff. Default 0.75.
+        chunk (int, optional): number of bursts transformed at a time. Default 8.
+
+    Returns:
+        torch.Tensor: the frames with the pattern removed, same shape and dtype.
+        torch.Tensor: the pattern of each burst, shape (n_seq, nx, ny).
+        torch.Tensor: the summed weight of the frequencies taken as pattern inside the diffraction limit in each
+        burst (the number of frequencies, counting partial ones), shape (n_seq,).
+    """
+
+    n_seq, n_f, nx, ny = frames.shape
+    mx, my = 2 * nx, 2 * ny
+
+    kx = torch.fft.fftfreq(mx, dtype=torch.float64)
+    ky = torch.fft.fftfreq(my, dtype=torch.float64)
+    KX, KY = torch.meshgrid(kx, ky, indexing='ij')
+    k = torch.sqrt(KX**2 + KY**2)
+    rho = (k / cutoff).to(frames.device)
+    ring = torch.round(k * max(mx, my)).long().to(frames.device)
+    rings = [ring == r for r in range(int(ring.max()) + 1)]
+
+    def mirror(x):
+        top = torch.cat([x, torch.flip(x, dims=[-1])], dim=-1)
+        return torch.cat([top, torch.flip(top, dims=[-2])], dim=-2)
+
+    pattern = torch.zeros(n_seq, nx, ny, dtype=frames.dtype, device=frames.device)
+    n_removed = torch.zeros(n_seq, dtype=torch.float64)
+
+    for i0 in range(0, n_seq, chunk):
+        x = frames[i0:i0 + chunk].to(torch.float64)
+        F = torch.fft.fft2(mirror(x - torch.mean(x, dim=(-1, -2), keepdim=True)))
+        P = torch.mean(torch.abs(F)**2, dim=1)
+        C = torch.abs(torch.mean(F, dim=1))**2 / torch.clamp(P, min=1e-300)
+        med = torch.zeros_like(P)
+        for m in rings:
+            med[:, m] = torch.quantile(P[:, m], 0.5, dim=-1)[:, None]
+        w = torch.clamp((C - (coherence - 0.1)) / 0.2, min=0.0, max=1.0) * \
+            torch.clamp((P / torch.clamp(med, min=1e-300) - (power - 0.5)) / 1.0, min=0.0, max=1.0) * (rho > rho_min)
+        pat = torch.fft.ifft2(torch.fft.fft2(mirror(torch.mean(x, dim=1))) * w).real[:, :nx, :ny]
+        pattern[i0:i0 + chunk] = pat.to(frames.dtype)
+        n_removed[i0:i0 + chunk] = torch.sum(w * (rho <= 1.0), dim=(-1, -2)).cpu()
+
+    return frames - pattern[:, None, :, :], pattern, n_removed
+
 def azimuthal_power_old(self, image):        
     """
     Compute the azimuthal power spectrum of an image.

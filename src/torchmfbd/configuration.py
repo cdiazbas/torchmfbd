@@ -23,6 +23,11 @@ def _check_config(config):
     if "remove_gradient_apodization" not in config["images"]:
         config["images"]["remove_gradient_apodization"] = False
 
+    if "remove_fixed_pattern" not in config["images"]:
+        config["images"]["remove_fixed_pattern"] = True
+    if not isinstance(config["images"]["remove_fixed_pattern"], bool):
+        raise ValueError(f"Invalid value for images.remove_fixed_pattern. It is {config['images']['remove_fixed_pattern']} but should be true or false")
+
     # Optimization
     if "gpu" not in config["optimization"]:
         config["optimization"]["gpu"] = -1

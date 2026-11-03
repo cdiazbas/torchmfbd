@@ -226,6 +226,7 @@ class Deconvolution(object):
         self.ind_diversity = []
         self.frames = []
         self.sigma = []
+        self.fixed_pattern = []
         self.diversity = []
 
         self.external_regularizations = []
@@ -1910,6 +1911,28 @@ class Deconvolution(object):
 
         if self.nx != self.npix or self.ny != self.npix:
             raise ValueError(f"Frames are {self.nx}x{self.ny} pixels but images.n_pixel is {self.npix}")
+
+        # A pattern fixed on the detector, found from the frames of each burst (all time steps of a sequence
+        # together: the pattern does not change in time)
+        if self.config['images']['remove_fixed_pattern']:
+            n_burst = self.n_t * self.n_f
+            if n_burst < 12:
+                msg = f"Fixed-pattern removal skipped for object {id_object}: {n_burst} frames per burst, at least 12 are needed"
+                self.logger.warning(msg)
+                warnings.warn(msg, RuntimeWarning)
+                self.fixed_pattern.append(None)
+            else:
+                wavelength = self.config[f'object{id_object+1}']['wavelength']
+                diffraction_limit = wavelength * 1e-8 / self.config['telescope']['diameter'] * 206265.0
+                cutoff = self.config['images']['pix_size'] / diffraction_limit
+                burst = rearrange(frames, '(s t) f h w -> s (t f) h w', t=self.n_t, s=self.n_seq)
+                burst, pattern, n_removed = util.remove_fixed_pattern(torch.as_tensor(burst), cutoff)
+                frames = rearrange(burst, 's (t f) h w -> (s t) f h w', t=self.n_t, s=self.n_seq)
+                self.fixed_pattern.append(pattern)
+                self.logger.info(f"Fixed pattern removed: median {float(torch.median(n_removed)):.1f} frequencies inside the diffraction limit per burst, "
+                                 f"pattern rms {float(torch.std(pattern)):.3e} (frames rms {float(torch.std(burst)):.3e})")
+        else:
+            self.fixed_pattern.append(None)
                 
         if sigma is None:
             self.logger.info(f"Estimating noise...")            
@@ -1969,6 +1992,7 @@ class Deconvolution(object):
 
         self.frames = []
         self.sigma = []
+        self.fixed_pattern = []
         self.diversity = []
 
 
