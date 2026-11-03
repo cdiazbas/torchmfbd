@@ -195,6 +195,9 @@ class Deconvolution(object):
         if n_modes is not None:
             self.n_modes = n_modes
 
+        if self.psf_model.lower() not in ['zernike', 'kl', 'nmf', 'vae']:
+            raise ValueError(f"psf model '{self.psf_model}' is not available in the spatially invariant deconvolution (pca is only implemented in DeconvolutionSV)")
+
         if self.psf_model.lower() in ['zernike', 'kl']:
             
             # Get Noll's n order from the number of modes
@@ -404,6 +407,10 @@ class Deconvolution(object):
                 latent_dim = checkpoint['latent_dim']
                 n_pixel = checkpoint['n_pixel']
                 nested_dims = checkpoint['nested_dims']
+                self.vae_latent_dim = latent_dim
+
+                if self.n_modes > latent_dim:
+                    raise ValueError(f"psf.nmax_modes = {self.n_modes} but the VAE latent space has {latent_dim} dimensions")
 
                 # Model and Optimizer initialization
                 self.model_vae = ConvVAE2D(in_channels=1, img_size=n_pixel, latent_dim=latent_dim, nested_dims=nested_dims).to(self.device)
@@ -676,7 +683,7 @@ class Deconvolution(object):
             a = 7
             b = -5
             x = np.linspace(0, 1, n_iterations)            
-            anneal = (self.noll_max - 2) * (util.sigmoid(a) - util.sigmoid(a + x * (b-a)) ) / ( util.sigmoid(a) - util.sigmoid(b) )
+            anneal = (len(modes) - 1) * (util.sigmoid(a) - util.sigmoid(a + x * (b-a)) ) / ( util.sigmoid(a) - util.sigmoid(b) )
             
             anneal = (anneal + 0.1).astype(int)            
             anneal = modes[anneal]
@@ -905,8 +912,8 @@ class Deconvolution(object):
                 
         # Decode latent codes to PSFs using the VAE model
         
-        if latent_codes.shape[-1] < 200:
-            latent_codes = torch.nn.functional.pad(latent_codes, (0, 200 - latent_codes.shape[-1]))
+        if latent_codes.shape[-1] < self.vae_latent_dim:
+            latent_codes = torch.nn.functional.pad(latent_codes, (0, self.vae_latent_dim - latent_codes.shape[-1]))
 
         latent_codes = rearrange(latent_codes, 'ns nf nz -> (ns nf) nz')  # Reshape for VAE input
         
@@ -1580,6 +1587,9 @@ class Deconvolution(object):
             self.time_present = False
             self.n_seq, self.n_f, self.nx, self.ny = frames.shape
             self.n_t = 1
+
+        if self.nx != self.npix or self.ny != self.npix:
+            raise ValueError(f"Frames are {self.nx}x{self.ny} pixels but images.n_pixel is {self.npix}")
                 
         if sigma is None:
             self.logger.info(f"Estimating noise...")            

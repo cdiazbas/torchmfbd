@@ -45,6 +45,25 @@ def _check_config(config):
     if "jitter" not in config["psf"]:
         config["psf"]["jitter"] = 'none'
 
+    # YAML `jitter: False` / `jitter: ~` mean "no jitter"; anything else must be a known mode
+    if config["psf"]["jitter"] is False or config["psf"]["jitter"] is None:
+        config["psf"]["jitter"] = 'none'
+    if config["psf"]["jitter"] not in ["none", "fast", "slow"]:
+        raise ValueError(f"Invalid value for psf jitter. It is {config['psf']['jitter']} but should be none, fast or slow")
+
+    if "loss_type" not in config["optimization"]:
+        config["optimization"]["loss_type"] = "joint"
+
+    if config["optimization"]["loss_type"] not in ["joint", "marginal"]:
+        raise ValueError(f"Invalid value for loss_type. It is {config['optimization']['loss_type']} but should be joint or marginal")
+
+    if "filter_loss" in config["optimization"]:
+        if config["optimization"]["filter_loss"] not in ["wiener", "wiener_time", "wiener_time_contrast", "lowpass"]:
+            raise ValueError(f"Invalid value for filter_loss. It is {config['optimization']['filter_loss']} but should be wiener, wiener_time, wiener_time_contrast or lowpass")
+
+    if "regularization" not in config or config["regularization"] is None:
+        config["regularization"] = {}
+
     if "enforce_positive_object" not in config["optimization"]:
         config["optimization"]["enforce_positive_object"] = False
         
@@ -64,12 +83,12 @@ def _check_config(config):
         raise ValueError(f"Invalid value for annealing type. It is {config['annealing']['type']} but should be sigmoid, linear or none")
         
     if config["psf"]["model"] not in ["zernike", "kl", "pca", "nmf", "vae"]:
-        raise ValueError(f"Invalid value for psf model. It is {config['psf']['model']} but should be zernike, kl, pca or nmf")
+        raise ValueError(f"Invalid value for psf model. It is {config['psf']['model']} but should be zernike, kl, pca, nmf or vae")
     
     for k, v in config.items():
         if "object" in k:
-            if v["image_filter"] not in ["tophat", "scharmer", "none"]:
-                raise ValueError(f"Invalid value for image_filter. It is {v['image_filter']} but should be tophat, scharmer or none")
+            if v["image_filter"] not in ["tophat", "scharmer"]:
+                raise ValueError(f"Invalid value for image_filter. It is {v['image_filter']} but should be tophat or scharmer")
             if "s_u_joint" not in v:
                 v["s_u_joint"] = 100.0
 
