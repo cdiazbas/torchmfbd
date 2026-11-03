@@ -1373,8 +1373,6 @@ class Deconvolution(object):
 
         # Compute the mean of the frames in Fourier space (frequency (0,0) to use it in the s_u prior        
         
-        self.n_f = frames_ft[0].shape[1]
-
         # If we want to do time regularization, first get the object with the Wiener filter
         if self.loss_filter == 'wiener_time' or self.loss_filter == 'wiener_time_contrast':
             obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, 
@@ -1428,7 +1426,7 @@ class Deconvolution(object):
                         
                         # Prior loss consequence of the marginalization of the object in the joing loss
                         # plus the term depending on the noise variance
-                        loss_prior_marginal = 0.5 * torch.log(hu2) + 0.5 * (self.n_f - 1.0) * torch.log(s2)
+                        loss_prior_marginal = 0.5 * torch.log(hu2) + 0.5 * (frames_ft[i].shape[1] - 1.0) * torch.log(s2)
                         loss_prior = loss_prior_marginal
                     else:
                         self.pars_s0_avg = [torch.mean(K).detach(), torch.mean(v0).detach(), torch.mean(p).detach(), torch.mean(s2).detach()]
@@ -1439,7 +1437,7 @@ class Deconvolution(object):
                         
                         # Prior loss consequence of the marginalization of the object in the joing loss
                         # plus the term depending on the noise variance
-                        loss_prior_marginal = 0.5 * torch.log(hu2) + 0.5 * (self.n_f - 1.0) * torch.log(s2[:, None, None])
+                        loss_prior_marginal = 0.5 * torch.log(hu2) + 0.5 * (frames_ft[i].shape[1] - 1.0) * torch.log(s2[:, None, None])
 
                         # Prior loss on sigma**2 to avoid zero division and to keep it in a reasonable range
                         # We use a Gaussian prior on log(sigma**2) with mean given by the average of sigma**2 
@@ -1535,6 +1533,44 @@ class Deconvolution(object):
         return loss_data_total, loss_prior_total, loss_total
 
     
+    def object_from_parameters(self, obj, plane=None):
+        """
+        Object, its spectrum and the filtered object from the optimised object parameters
+        (infer_object=True path).
+
+        The spectra follow the convention of compute_object: obj_ft is the unnormalised DFT
+        of the object, so that obj_ft * otf (otf with norm='ortho') is directly comparable
+        with the ortho spectra of the frames, and torch.fft.ifft2 (default norm) returns
+        the object in the units of the frames.
+
+        Parameters
+        ----------
+        obj : list of torch.Tensor
+            Object parameters (n_seq, nx, ny) for each object.
+        plane : list of torch.Tensor, optional
+            Gradient removed during apodization; added back to the filtered object when
+            images.remove_gradient_apodization is set.
+        """
+        obj_ft = [None] * self.n_o
+        obj_filter = [None] * self.n_o
+
+        for i in range(self.n_o):
+            if (self.config['optimization']['transform'] == 'softplus'):
+                scale = self.config['optimization']['softplus_scale']
+                tmp = F.softplus(obj[i] * scale) / scale
+            else:
+                tmp = torch.clamp(obj[i], min=0.0)
+            obj_ft[i] = torch.fft.fft2(tmp)
+
+        obj_filter_ft = self.fft_filter(obj_ft)
+
+        for i in range(self.n_o):
+            obj_filter[i] = torch.fft.ifft2(obj_filter_ft[i]).real
+            if self.remove_gradient_apodization and plane is not None:
+                obj_filter[i] = obj_filter[i] + plane[i][:, 0, :, :]
+
+        return obj_ft, obj_filter_ft, obj_filter
+
     def fft_filter(self, image_ft):
         """
         Applies a Fourier filter to the input image in the frequency domain.
@@ -1797,14 +1833,8 @@ class Deconvolution(object):
             
             if (self.infer_object):
 
-                # Compute filtered object from the current estimate
-                if (self.config['optimization']['transform'] == 'softplus'):
-                    obj_ft = torch.fft.fft2(F.softplus(obj), norm=self.fft_norm)
-                else:
-                    obj_ft = torch.fft.fft2(obj, norm=self.fft_norm)
-
-                # Filter in Fourier
-                obj_filter_ft = self.fft_filter(obj_ft)                
+                # Filtered object from the stored object parameters, with the new mask
+                obj_ft, obj_filter_ft, obj_filter = self.object_from_parameters(self.obj_infer_seq[i_seq], plane_seq)
 
             else:
                 pars_s0_arg = self.pars_s0_seq[i_seq] if self.loss_type == 'marginal' else None
@@ -2075,6 +2105,7 @@ class Deconvolution(object):
         self.degraded_seq = [None] * n_sequences
         self.obj_seq = [None] * n_sequences
         self.obj_diffraction_seq = [None] * n_sequences
+        self.obj_infer_seq = [None] * n_sequences
 
         tinit = time.time()
         tinit_global = time.time()
@@ -2117,27 +2148,39 @@ class Deconvolution(object):
                 
                 obj_init = [None] * self.n_o
 
-                # Find frame with best contrast
                 for i in range(self.n_o):
-                
-                    contrast = torch.std(frames_apodized_seq[i], dim=(-1, -2)) / torch.mean(frames_apodized_seq[i], dim=(-1, -2)) * 100.0
-                    ind = torch.argsort(contrast[0, :], descending=True)
 
                     if obj_in is not None:
+                        # obj_in: one tensor for all objects or a list with one per object, each
+                        # (nx, ny), or (n_sequences, nx, ny) with n_sequences = n_seq * n_t
                         self.logger.info(f"Using provided initial object...")
-                        obj_init[i] = obj_in
-                        obj_init[i] = obj_init.to(self.device)
-                    else:                    
+                        tmp = obj_in[i] if isinstance(obj_in, (list, tuple)) else obj_in
+                        tmp = torch.as_tensor(tmp, dtype=torch.float32)
+                        if tmp.ndim == 2:
+                            tmp = tmp[None, :, :].expand(n_seq, -1, -1)
+                        elif tmp.shape[0] == n_seq_total and n_seq_total != n_seq:
+                            tmp = tmp[seq, ...]
+                        if tuple(tmp.shape) != (n_seq, self.n_x, self.n_y):
+                            raise ValueError(f"obj_in has shape {tuple(tmp.shape)}; expected ({self.n_x}, {self.n_y}) or ({n_seq_total}, {self.n_x}, {self.n_y})")
+                        obj_init[i] = tmp.to(self.device)
+                    else:
+                        # Frames of the first diversity channel, (n_seq, n_f, nx, ny)
+                        frames_init = frames_apodized_seq[i][:, 0:self.n_f, :, :]
                         if self.config['initialization']['object'] == 'contrast':
                             self.logger.info(f"Selecting initial object as image with best contrast...")
-                            obj_init[i] = frames_apodized_seq[i][:, :, ind[0], :, :]
+                            contrast = torch.std(frames_init, dim=(-1, -2)) / torch.mean(frames_init, dim=(-1, -2))
+                            best = torch.argmax(contrast, dim=1)
+                            obj_init[i] = frames_init[torch.arange(n_seq), best, :, :]
                         if self.config['initialization']['object'] == 'average':
                             self.logger.info(f"Selecting initial object as average image...")
-                            obj_init[i] = torch.mean(frames_apodized_seq[i], dim=2)
+                            obj_init[i] = torch.mean(frames_init, dim=1)
                     
-                        # Initialize the object with the inverse softplus
+                    # Initialize the object with the inverse of softplus(x * scale) / scale; the floor
+                    # keeps pixels at or near zero finite (log(expm1(z)) -> -inf as z -> 0)
                     if (self.config['optimization']['transform'] == 'softplus'):
-                        obj_init[i] = torch.log(torch.exp(obj_init[i]) - 1.0)
+                        scale = self.config['optimization']['softplus_scale']
+                        z = torch.clamp(obj_init[i] * scale, min=1e-6)
+                        obj_init[i] = (z + torch.log(-torch.expm1(-z))) / scale
             
             # Unknown modes
             if modes_in is not None:
@@ -2422,37 +2465,33 @@ class Deconvolution(object):
                     
                     if (infer_object):
 
-                        obj_ft = [None] * self.n_o
-                        obj_filter_ft = [None] * self.n_o
+                        # Object (softplus(obj * softplus_scale) / softplus_scale or clamped) and its spectrum
+                        obj_ft, obj_filter_ft, obj_filter = self.object_from_parameters(obj)
 
-                        loss_mse = torch.tensor(0.0).to(self.device)
-                        
-                        for i in range(self.n_o):
-                            # Compute filtered object from the current estimate while also clamping negative values
-                            if (self.config['optimization']['transform'] == 'softplus'):
-                                tmp = torch.clamp(F.softplus(obj[i]), min=0.0)
-                                obj_ft[i] = torch.fft.fft2(tmp, norm=self.fft_norm)
-                            else:
-                                tmp = torch.clamp(obj[i], min=0.0)
-                                obj_ft[i] = torch.fft.fft2(tmp, norm=self.fft_norm)
-                        
-                        # Filter in Fourier
-                        obj_filter_ft = self.fft_filter(obj_ft)
+                        loss_data = torch.tensor(0.0).to(self.device)
 
                         for i in range(self.n_o):
 
                             degraded_ft = obj_ft[i][:, None, :, :] * otf[i]
 
-                            # residual = self.weight[:, :, None, None, None] * (degraded_ft - frames_ft)
-                            residual =  (degraded_ft - frames_ft[i])
-                            loss_mse += torch.mean((residual * torch.conj(residual)).real) / self.npix**2
+                            # Chi^2 with per-frame noise variances: 0.5 * sum_j |D_j - O S_j|^2 / sigma_j^2,
+                            # averaged over sequences and frequencies (the joint data term before the
+                            # object is eliminated). With the ortho FFT the noise variance per frequency
+                            # is sigma^2, so the loss is O(n_f) at the solution and Adam's eps is irrelevant.
+                            residual = degraded_ft - frames_ft[i]
+                            weight = 1.0 / (sigma_seq[i][:, :, None, None]**2 + 1e-20)
+                            loss_data = loss_data + 0.5 * torch.mean(torch.sum(weight * (residual * torch.conj(residual)).real, dim=1))
+
+                        loss_prior = torch.tensor(0.0).to(self.device)
+                        loss = loss_data + loss_prior
 
                     else:                        
 
                         pars_s0_arg = pars_s0_torch if self.loss_type == 'marginal' else None
                         pars_s2_arg = pars_s2_torch if (self.loss_type == 'marginal' and 'psd' in self.config) else None
 
-                        if self.show_object_info:
+                        # The object is needed for the progress bar and for any object regularization (BUG-06)
+                        if self.show_object_info or len(self.index_regularization['object']) > 0:
                             obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, 
                                                                                     otf, 
                                                                                     sigma_seq, 
@@ -2585,26 +2624,10 @@ class Deconvolution(object):
                 
             if (infer_object):
                 
-                # Compute filtered object from the current estimate
-                obj_ft = [None] * self.n_o
-                obj_filter_ft = [None] * self.n_o
-                obj_filter = [None] * self.n_o
-                
-                for i in range(self.n_o):
-                    # Compute filtered object from the current estimate while also clamping negative values
-                    if (self.config['optimization']['transform'] == 'softplus'):
-                        scale = self.config['optimization'].get('softplus_scale', 1.0)
-                        tmp = torch.clamp(F.softplus(obj[i] * scale) / scale, min=0.0)
-                        obj_ft[i] = torch.fft.fft2(tmp, norm=self.fft_norm)
-                    else:
-                        tmp = torch.clamp(obj[i], min=0.0)
-                        obj_ft[i] = torch.fft.fft2(tmp, norm=self.fft_norm)
-                
-                # Filter in Fourier
-                obj_filter_ft = self.fft_filter(obj_ft)                
-
-                for i in range(self.n_o):
-                    obj_filter[i] = torch.fft.ifft2(obj_filter_ft[i]).real
+                # Filtered object from the final estimate, with the apodization gradient added back
+                with torch.no_grad():
+                    obj_ft, obj_filter_ft, obj_filter = self.object_from_parameters(obj, plane_seq)
+                self.obj_infer_seq[i_seq] = [o.detach() for o in obj]
 
             else:
                 pars_s0_arg = pars_s0_torch if self.loss_type == 'marginal' else None

@@ -23,6 +23,7 @@ class RegularizationSmooth(Regularization):
                 n_o = len(x)
                 loss = 0.0
                 for i in range(n_o):
-                    loss += self.lambda_reg * torch.mean(self.finite_difference(x[i])**2)
+                    # objects are (n_seq, nx, ny); FiniteDifference takes (b, c, nx, ny)
+                    loss += self.lambda_reg * torch.mean(self.finite_difference(x[i][:, None, :, :])**2)
 
         return loss
