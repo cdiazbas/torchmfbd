@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 import scipy.optimize as opt
 import torchmfbd.util as util
@@ -21,13 +22,19 @@ class DeconvolutionSV(Deconvolution):
         if self.psf_model.lower() not in ['pca', 'nmf']:
             raise Exception(f"Spatially variant deconvolution cannot be used with PSF model {self.psf_model}")
 
-        # Settings of the spatially invariant class that this class does not implement
+        # Settings of the spatially invariant class that this class does not use: said, not refused,
+        # because shared configuration files carry them
+        ignored = []
         if self.loss_type != 'joint':
-            raise ValueError(f"DeconvolutionSV implements only a joint MSE loss; optimization.loss_type = {self.loss_type} is not available")
+            ignored.append(f"optimization.loss_type = {self.loss_type} (the loss is a weighted MSE)")
         if self.config['optimization'].get('filter_loss', 'wiener') != 'wiener':
-            raise ValueError(f"DeconvolutionSV does not use optimization.filter_loss (= {self.config['optimization']['filter_loss']})")
+            ignored.append(f"optimization.filter_loss = {self.config['optimization']['filter_loss']}")
         if self.use_jitter != 'none':
-            raise ValueError(f"DeconvolutionSV does not model psf.jitter (= {self.use_jitter})")
+            ignored.append(f"psf.jitter = {self.use_jitter}")
+        for item in ignored:
+            msg = f"DeconvolutionSV does not use {item}; the setting is ignored"
+            self.logger.warning(msg)
+            warnings.warn(msg, UserWarning)
 
         self.basis_file = self.config['psf']['filename']
         self.ngrid_modes = self.config['psf']['ngrid_modes']

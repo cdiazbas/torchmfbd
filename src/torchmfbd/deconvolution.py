@@ -153,6 +153,10 @@ class Deconvolution(object):
         if self.loss_type == 'marginal':
             self.stop_psd = self.config['optimization'].get('stop_psd_optimization', 1000)
 
+        # Hard bounds of the PSD exponent p (s_u ~ (1 + (v/v0)^2)^(-p/2)): unbounded, p ran to infinity
+        # under LBFGS while the loss stayed finite
+        self.log_p_bounds = (float(np.log(0.5)), float(np.log(10.0)))
+
         # Type of Fourier filter for the loss
         if 'filter_loss' in self.config['optimization']:
             self.loss_filter = self.config['optimization']['filter_loss']
@@ -1088,7 +1092,7 @@ class Deconvolution(object):
                 # Upstream format: pars_s0 shape (n_o, 3), pars_s2 shape (n_o, 1)
                 K = torch.exp(pars_s0[obj, 0])            
                 v0 = torch.exp(pars_s0[obj, 1])
-                p = torch.exp(pars_s0[obj, 2])
+                p = torch.exp(torch.clamp(pars_s0[obj, 2], min=self.log_p_bounds[0], max=self.log_p_bounds[1]))
 
                 v = self.rho[obj]
 
@@ -1097,15 +1101,17 @@ class Deconvolution(object):
                 s_u = K * self.npix / (1.0 + (v/v0)**2)**(p/2.0)
                 
                 # The DC component of the Fourier transform of the image is equal to sqrt(nx*ny)*mean if norm='ortho'
-                # As a consequence, the variance of the noise at frequency (0,0) is given by s_u[0,0] = mean**2 * nx * ny
-                s_u[0, 0] = frames_mean[0]**2 * self.npix * self.npix
+                # As a consequence, the variance of the noise at frequency (0,0) is given by s_u[0,0] = mean**2 * nx * ny,
+                # one value per sequence of the batch
+                s_u = s_u[None, :, :].repeat(frames_mean.shape[0], 1, 1)
+                s_u[:, 0, 0] = frames_mean**2 * self.npix * self.npix
                 
                 s2 = torch.exp(pars_s2[obj, 0])
             else:
                 # Local format fallback: pars_s0 shape (batch_size, n_o, 4)
                 K = torch.exp(pars_s0[:, obj, 0])[:, None, None]
                 v0 = torch.exp(pars_s0[:, obj, 1])[:, None, None]            
-                p = torch.exp(pars_s0[:, obj, 2])[:, None, None]
+                p = torch.exp(torch.clamp(pars_s0[:, obj, 2], min=self.log_p_bounds[0], max=self.log_p_bounds[1]))[:, None, None]
 
                 v = self.rho[obj][None, :, :]
 

@@ -96,16 +96,20 @@ def _check_config(config):
             if "s_u_joint" not in v:
                 v["s_u_joint"] = 100.0
 
-    if "psd" not in config:
+    # psd: initial values of the PSD parameters, no hyperprior. priors: initial values (the means) and
+    # Gaussian hyperpriors on K, v0, p. A configuration gives one of them; with neither, psd defaults.
+    if "psd" in config and "priors" in config and not config["priors"].get("derived_from_psd", False):
+        raise ValueError("Give either a psd block (initial values) or a priors block (initial values and hyperpriors), not both")
+    if "psd" not in config and "priors" not in config:
         config["psd"] = {}
         config["psd"]["K"] = 100.0
         config["psd"]["v0"] = 0.1
         config["psd"]["p"] = 2.0
-    # Retain priors block fallback if present for backward compatibility
     if "priors" not in config:
         config["priors"] = {}
         config["priors"]["K"] = {'mean': config["psd"]["K"], 'sigma': 1.0}
         config["priors"]["v0"] = {'mean': config["psd"]["v0"], 'sigma': 1.0}
         config["priors"]["p"] = {'mean': config["psd"]["p"], 'sigma': 1.0}
+        config["priors"]["derived_from_psd"] = True
                                     
     return config
