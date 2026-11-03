@@ -21,6 +21,14 @@ class DeconvolutionSV(Deconvolution):
         if self.psf_model.lower() not in ['pca', 'nmf']:
             raise Exception(f"Spatially variant deconvolution cannot be used with PSF model {self.psf_model}")
 
+        # Settings of the spatially invariant class that this class does not implement
+        if self.loss_type != 'joint':
+            raise ValueError(f"DeconvolutionSV implements only a joint MSE loss; optimization.loss_type = {self.loss_type} is not available")
+        if self.config['optimization'].get('filter_loss', 'wiener') != 'wiener':
+            raise ValueError(f"DeconvolutionSV does not use optimization.filter_loss (= {self.config['optimization']['filter_loss']})")
+        if self.use_jitter != 'none':
+            raise ValueError(f"DeconvolutionSV does not model psf.jitter (= {self.use_jitter})")
+
         self.basis_file = self.config['psf']['filename']
         self.ngrid_modes = self.config['psf']['ngrid_modes']
 
@@ -48,6 +56,8 @@ class DeconvolutionSV(Deconvolution):
                 raise Exception(f"Central obscuration mismatch: {self.config['telescope']['central_obscuration']} vs {f['info'][3]}")
 
             n_psf = int(np.sqrt(f['basis'].shape[1]))
+            if f['basis'].shape[0] < self.n_modes:
+                raise ValueError(f"The basis file has {f['basis'].shape[0]} modes but psf.nmax_modes requests {self.n_modes}")
             self.logger.info(f"  * Size of basis PSF modes {n_psf}x{n_psf}...")        
             self.logger.info(f"  * Number of modes {self.n_modes}...")            
             
@@ -69,8 +79,14 @@ class DeconvolutionSV(Deconvolution):
                 self.modes_init = np.copy(self.coeffs_diffraction)
 
             if (self.psf_model.lower() == 'nmf'):
-                # Normalize the modes to unit area            
-                self.psf_modes /= np.sum(self.psf_modes, axis=(1, 2), keepdims=True)
+                # 'Fat wing' exponent, as in the spatially invariant class
+                basis_power = self.config['psf'].get('basis_power', 1.0)
+                if basis_power != 1.0:
+                    self.logger.info(f"  * Applying 'fat wing' power: {basis_power}")
+                    self.psf_modes = (self.psf_modes + 1e-12)**basis_power
+
+                # Normalize the modes to unit area (an all-zero mode stays zero instead of 0/0)
+                self.psf_modes /= (np.sum(self.psf_modes, axis=(1, 2), keepdims=True) + 1e-12)
 
                 self.logger.info(f"Computing NMF coefficients of diffraction PSF")            
                                         
@@ -182,20 +198,6 @@ class DeconvolutionSV(Deconvolution):
         del objf1, objf2
 
         return obj
-    
-    def active_annealing(self, iter):
-        if (iter < self.config['annealing']['start_pct'] * self.config['gradient_steps']):
-            y = 2
-        elif (iter > self.config['annealing']['end_pct'] * self.config['gradient_steps']):
-            y = self.config['n_modes']
-        else:
-            x0 = self.config['annealing']['start_pct'] * self.config['gradient_steps']
-            x1 = self.config['annealing']['end_pct'] * self.config['gradient_steps']
-            y0 = 2
-            y1 = self.config['n_modes']
-            y = np.clip((y1 - y0) / (x1 - x0) * (iter - x0) + y0, y0, y1)
-        
-        return int(y)
     
     def compute_syn(self, ns, nf, obj_filtered, tiptilt, modes, infer_tiptilt, infer_modes, i_o):
         """
@@ -347,6 +349,11 @@ class DeconvolutionSV(Deconvolution):
         # Define all basis
         self.define_basis()
 
+        # The PSF basis has no wavefront to add a defocus to, and the loop fits n_f frames per object
+        for i in range(self.n_o):
+            if len(self.init_frame_diversity[i]) > 1:
+                raise ValueError(f"Phase diversity ({len(self.init_frame_diversity[i])} channels for object {i}) is not available in DeconvolutionSV")
+
         # Fill the list of frames and apodize the frames if needed
         for i in range(self.n_o):
             self.frames_apodized[i] = self.frames_apodized[i].to(self.device)
@@ -429,6 +436,9 @@ class DeconvolutionSV(Deconvolution):
                 sigma_seq.append(self.sigma[i][seq, ...])
                 s2_mean = torch.mean(self.sigma[i][seq, ...]**2, dim=1, keepdim=True)
                 weight_seq.append(s2_mean / (self.sigma[i][seq, ...]**2 + 1e-10))
+
+            # Sequences in this batch (the tip-tilt and modes were allocated for all sequences)
+            n_seq = len(seq)
                         
             # Initial estimation of the object: average of all frames
             if self.config['initialization']['object'].lower() == 'average':
@@ -450,7 +460,8 @@ class DeconvolutionSV(Deconvolution):
                     else:
                         contrast = torch.std(frames_apodized_seq[i], dim=(-1, -2)) / torch.mean(frames_apodized_seq[i], dim=(-1, -2))
                     
-                    obj.append(frames_apodized_seq[i][:, torch.argmax(contrast), ...])
+                    best = torch.argmax(contrast, dim=1)
+                    obj.append(frames_apodized_seq[i][torch.arange(n_seq), best, ...])
                     if not self.remove_gradient_apodization:
                         obj[i] /= torch.mean(obj[i])
                                             
@@ -472,9 +483,13 @@ class DeconvolutionSV(Deconvolution):
             
             # Safe inverse softplus: for large values x ~= y, for small values use the log formula
             threshold = 20.0
-            modes_val = torch.where(self.modes_init * scale > threshold, 
-                                  self.modes_init, 
-                                  torch.log(torch.exp(self.modes_init * scale) - 1.0 + 1e-10) / scale)
+            if self.psf_model.lower() == 'nmf':
+                modes_val = torch.where(self.modes_init * scale > threshold, 
+                                      self.modes_init, 
+                                      torch.log(torch.exp(self.modes_init * scale) - 1.0 + 1e-10) / scale)
+            else:
+                # PCA coefficients are signed and enter compute_syn untransformed
+                modes_val = self.modes_init.clone()
             
             modes = modes_val[None, None, :, None, None].repeat((n_seq, self.n_f, 1, self.ngrid_modes, self.ngrid_modes))
             
@@ -494,7 +509,7 @@ class DeconvolutionSV(Deconvolution):
             
             self.logger.info("Starting optimization...")
 
-            self.loss = []
+            losses = []
         
             t = tqdm(range(n_iterations))
                     
@@ -607,7 +622,9 @@ class DeconvolutionSV(Deconvolution):
 
                 t.set_postfix(ordered_dict = tmp)
 
-                self.loss.append(loss)
+                losses.append(loss.detach())
+
+            self.loss[i_seq] = torch.stack(losses)
 
             if self.psf_model.lower() == 'nmf':
                 scale = self.config['optimization'].get('softplus_scale', 1.0)
@@ -645,6 +662,7 @@ class DeconvolutionSV(Deconvolution):
             self.modes_lr_seq[i_seq] = modes_infer.detach()
             self.modes_hr_seq[i_seq] = modes.detach()
                                     
+        self.loss = torch.cat(self.loss, dim=0)
         self.tiptilt_lr = torch.cat(self.tiptilt_lr_seq, dim=0)
         self.tiptilt_hr = torch.cat(self.tiptilt_hr_seq, dim=0)
         self.modes_lr = torch.cat(self.modes_lr_seq, dim=0)
