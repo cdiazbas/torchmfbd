@@ -1141,6 +1141,60 @@ class Deconvolution(object):
         
         return torch.tensor(mask.astype('float32')).to(Sconj_S.device)
 
+    def garrote_filter(self, Sconj_S, Sconj_I, sigma):
+        """
+        Continuous version of the Löfdahl-Scharmer filter: the gain 1 - sigma^2 sum|S|^2 / |sum S* D|^2,
+        with the ratio median-filtered over 3 x 3 frequencies, clipped to [0, 1] and used as it is, without
+        the threshold, the binarisation and the flood fill. Per frequency this is the positive-part
+        James-Stein (non-negative garrote) shrinkage of the multi-frame estimate. The gain is a continuous
+        function of the data, so a small change of the frames gives a small change of the object.
+
+        Parameters:
+        -----------
+        Sconj_S : torch.Tensor
+            sum_j |S_j|^2, shape (n_seq, nx, ny).
+        Sconj_I : torch.Tensor
+            sum_j S_j^* D_j, shape (n_seq, nx, ny).
+        sigma : torch.Tensor or float
+            Noise variance: a scalar, one value per sequence or one per frame (averaged over the frames).
+
+        Returns:
+        --------
+        torch.Tensor
+            The gain, shape (n_seq, nx, ny), in [0, 1].
+        """
+        SS = Sconj_S.real.detach()
+        SI2 = (torch.conj(Sconj_I) * Sconj_I).real.detach()
+
+        if hasattr(sigma, 'dim') and sigma.dim() > 0:
+            if sigma.dim() == 1:
+                s2 = sigma[:, None, None]
+            elif sigma.dim() == 2:
+                s2 = torch.mean(sigma, dim=1)[:, None, None]
+            else:
+                s2 = torch.mean(sigma, axis=-1)[:, None, None]
+        else:
+            s2 = sigma
+        if torch.is_tensor(s2):
+            s2 = s2.detach().to(SS.device)
+
+        # The sampled pupil's OTF ends before the nominal cutoff: where sum|S|^2 is at roundoff level the
+        # ratio is noise, so those frequencies are given no signal before the median
+        support = SS > 1e-10 * SS[:, 0:1, 0:1]
+        H = torch.where(support, SS / SI2, torch.full_like(SS, float('inf')))
+
+        # 3 x 3 median with periodic boundaries (the spectrum is periodic), by the 19-step min/max network for
+        # the median of nine values: exact, and elementwise, so it is fast on every device (torch.median is not on MPS)
+        nx, ny = H.shape[-2], H.shape[-1]
+        Hp = F.pad(H[:, None, :, :], (1, 1, 1, 1), mode='circular')[:, 0]
+        p = [Hp[:, i:i + nx, j:j + ny] for i in range(3) for j in range(3)]
+        for a, b in [(1, 2), (4, 5), (7, 8), (0, 1), (3, 4), (6, 7), (1, 2), (4, 5), (7, 8), (0, 3),
+                     (5, 8), (4, 7), (3, 6), (1, 4), (2, 5), (4, 7), (4, 2), (6, 4), (4, 2)]:
+            p[a], p[b] = torch.minimum(p[a], p[b]), torch.maximum(p[a], p[b])
+        H = p[4]
+
+        return torch.nan_to_num(torch.clamp(1.0 - H * s2, min=0.0, max=1.0), nan=0.0)
+
     def get_su_s2(self, obj, sigma, pars_s0=None, pars_s2=None, frames_mean=None):
         """
         Transforms the parameters of the s0 function to ensure they are in the correct range.
@@ -1338,7 +1392,7 @@ class Deconvolution(object):
         otf (torch.Tensor): 
             The Fourier transform of the point spread function (PSF).
         type_filter (str, optional): 
-            The type of filter to use ('tophat'/'scharmer'). Default is 'tophat'.
+            The type of filter to use ('tophat'/'scharmer'/'garrote'). Default is 'tophat'.
         Returns:
         --------
         torch.Tensor: The computed object in Fourier space.
@@ -1376,9 +1430,9 @@ class Deconvolution(object):
                 raise ValueError("enforce_positive_object is not available with the time-coupled filters: the positivity ADMM has no time coupling")
 
             if time_coupled:
-                # Spatial regularisation of the time solve: none for scharmer (the L&S mask selects the
-                # frequencies), s2/s_u for tophat, so that lambda_t -> 0 gives back each filter's estimate
-                if self.image_filter[i] == 'scharmer':
+                # Spatial regularisation of the time solve: none for scharmer and garrote (their gain selects
+                # the frequencies), s2/s_u for tophat, so that lambda_t -> 0 gives back each filter's estimate
+                if self.image_filter[i] in ('scharmer', 'garrote'):
                     Reg_Space, lambda_s = torch.zeros_like(Sconj_S[0, ...].real), 0.0
                 else:
                     reg = s2_term / s_u
@@ -1409,9 +1463,12 @@ class Deconvolution(object):
                 out = torch.cat(out, dim=0)
                 time_ft = rearrange(out, 's t w h -> (s t) w h')
 
-            # Use Lofdahl & Scharmer (1994) filter
-            if (self.image_filter[i] == 'scharmer'):
-                mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, s2_filt.detach()) * self.mask_diffraction_th[i][None, :, :]
+            # Lofdahl & Scharmer (1994) mask, or its continuous gain
+            if self.image_filter[i] in ('scharmer', 'garrote'):
+                if self.image_filter[i] == 'scharmer':
+                    mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, s2_filt.detach()) * self.mask_diffraction_th[i][None, :, :]
+                else:
+                    mask = self.garrote_filter(Sconj_S, Sconj_I, s2_filt) * self.mask_diffraction_th[i][None, :, :]
                 
                 if time_coupled:
                     out_ft[i] = time_ft
@@ -1503,7 +1560,7 @@ class Deconvolution(object):
         otf (torch.Tensor): 
             The Fourier transform of the point spread function (PSF).
         type_filter (str, optional): 
-            The type of filter to use ('tophat'/'scharmer'). Default is 'tophat'.
+            The type of filter to use ('tophat'/'scharmer'/'garrote'). Default is 'tophat'.
         Returns:
         --------
         torch.Tensor: The computed object in Fourier space.
@@ -1646,14 +1703,17 @@ class Deconvolution(object):
 
                 loss_prior = torch.tensor(0.0).to(self.device)
                 
-                # Wiener data term restricted to the support of the Lofdahl & Scharmer (1994) filter
-                if (self.image_filter[i] == 'scharmer'):
+                # Wiener data term weighted by the Lofdahl & Scharmer (1994) mask, or by its continuous gain
+                if self.image_filter[i] in ('scharmer', 'garrote'):
 
                     # We assume, for the moment, that the noise is the same for all frames
                     Sconj_S = torch.sum(torch.conj(otf[i]) * otf[i], dim=1)
                     Sconj_I = torch.sum(torch.conj(otf[i]) * frames_ft[i], dim=1)
 
-                    mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, sigma[i]**2) * self.mask_diffraction_th[i][None, :, :]
+                    if self.image_filter[i] == 'scharmer':
+                        mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, sigma[i]**2) * self.mask_diffraction_th[i][None, :, :]
+                    else:
+                        mask = self.garrote_filter(Sconj_S, Sconj_I, sigma[i]**2) * self.mask_diffraction_th[i][None, :, :]
 
                     loss_data = 0.5 * (du2 - s_u * hu_du2 / hu2) / s2_seq * mask
                 
