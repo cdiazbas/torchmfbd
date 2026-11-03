@@ -96,8 +96,14 @@ class Deconvolution(object):
                 else:
                     self.handle = None
                     self.logger.info(f"Computing in cuda:{self.config['optimization']['gpu']} (nvitop not installed, memory tracking disabled)")
+        elif torch.backends.mps.is_available() and self.config['optimization']['gpu'] >= 0:
+            self.logger.info(f"Computing in mps (Apple GPU)")
+            self.device = torch.device("mps")
+            self.handle = None
         else:
-            if not HAS_NVITOP:
+            if torch.backends.mps.is_available():
+                self.logger.info(f"MPS is available but not used (optimization.gpu < 0). Computing in cpu")
+            elif not HAS_NVITOP:
                 self.logger.info(f"nvitop not installed. Computing in cpu")
             else:
                 self.logger.info(f"No GPU is available. Computing in cpu")
@@ -1025,8 +1031,10 @@ class Deconvolution(object):
         torch.Tensor
             A tensor representing the mask after applying the Löfdahl-Scharmer filter.
         """
-        den = torch.conj(Sconj_I) * Sconj_I
-        H = (Sconj_S / den).real        
+        # Both sums are real by construction; dividing in real arithmetic avoids the |den|^2 of a complex
+        # division, which underflows to 0 (inf/NaN in H) on devices that flush subnormals, such as MPS
+        den = (torch.conj(Sconj_I) * Sconj_I).real
+        H = Sconj_S.real / den
         H = torch.fft.fftshift(H, dim=(-2, -1)).detach().cpu().numpy()
         
         # noise = 1.35 / np.median(H[:, :, 0:10, 0:10], axis=(2,3))
@@ -1163,10 +1171,15 @@ class Deconvolution(object):
         if M == 1:
             return (RHS / (sum_S_sq_flat + reg_s_flat + 1e-10)).reshape(M, Nx, Ny)
 
-        # The recursion runs in complex128 where the device has it. In complex64 the Neumann system is
-        # exactly singular at frequencies without data (sum|S|^2 = 0 beyond the cutoff): the last pivot
-        # cancels to 0 and the 0/0 survives the diffraction mask as NaN.
-        # MPS has no complex128; there the recursion is complex64 (untested: MPS is never selected).
+        # Frequencies without data in any time step (sum|S|^2 = 0 beyond the cutoff) make the Neumann
+        # system singular; their solution is undefined and masked out later. They are solved as an
+        # identity row and set to 0, so the last pivot cannot be 0/0 and NaN cannot reach the object.
+        lt_max = float(torch.max(torch.as_tensor(lambda_t))) if lambda_t_variable else float(lambda_t)
+        no_data = torch.sum(sum_S_sq_flat, dim=0) <= 1e-6 * lt_max
+        if torch.any(no_data):
+            sum_S_sq_flat = torch.where(no_data[None, :], torch.ones_like(sum_S_sq_flat), sum_S_sq_flat)
+
+        # complex128 where the device has it (MPS does not)
         work = torch.complex64 if S.device.type == 'mps' else torch.complex128
         
         # 2. Build Full Arrays for Diagonals out-of-place
@@ -1230,6 +1243,8 @@ class Deconvolution(object):
             
         # 5. Build Final Tensor Output 
         O_flat = torch.stack(O_list, dim=0)
+
+        O_flat = torch.where(no_data[None, :], torch.zeros((), dtype=O_flat.dtype, device=O_flat.device), O_flat)
 
         # Objects in the precision of the input
         return O_flat.reshape(M, Nx, Ny).to(S.dtype)
@@ -2517,10 +2532,9 @@ class Deconvolution(object):
 
             t = tqdm(range(n_iterations))
 
-            # zernike/kl start at the schedule's first value; nmf/vae fit all modes in the first step and
-            # follow the schedule afterwards. Starting the vae at the schedule's first value with latents
-            # initialised at zero gives much worse objects on synthetic data with a known truth.
-            if self.psf_model.lower() in ['zernike', 'kl']:
+            # The vae fits all latents in the first step and follows the schedule afterwards: started at the
+            # schedule's first value with latents initialised at zero it settles on too broad a PSF.
+            if self.psf_model.lower() in ['zernike', 'kl', 'nmf']:
                 n_active = int(self.anneal[0])
             else:
                 n_active = self.n_modes
