@@ -276,6 +276,10 @@ class Deconvolution(object):
             
             ind_wavelengths.append(unique_wavelengths.index(w))
 
+        # The VAE PSF does not depend on the wavelength: objects at different wavelengths would share it
+        if self.psf_model.lower() == 'vae' and len(unique_wavelengths) > 1:
+            raise ValueError(f"psf model vae gives the same PSF at every wavelength; objects at {unique_wavelengths} A need a wavefront model (zernike or kl)")
+
         # Normalize wavelengths to scale basis
         unique_wavelengths = np.array(unique_wavelengths).astype('float32')
         normalized_wavelengths = unique_wavelengths / np.max(unique_wavelengths)
