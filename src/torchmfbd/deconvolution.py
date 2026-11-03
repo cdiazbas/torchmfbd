@@ -253,6 +253,7 @@ class Deconvolution(object):
 
         self.pupil = [None] * self.n_o
         self.basis = [None] * self.n_o
+        self.basis_shifted = [None] * self.n_o
         self.defocus_basis = [None] * self.n_o
         self.rho = [None] * self.n_o
         self.f_x = [None] * self.n_o
@@ -911,10 +912,10 @@ class Deconvolution(object):
 
         for i in range(self.n_o):
 
-            # Compute PSF from estimated modes                
-            psf = torch.einsum('ijk,klm->ijlm', modes_nn, self.basis[i][0:n_active, :, :])
-
-            psf = torch.fft.fftshift(psf, dim=[-2, -1])
+            # PSF from the estimated modes, with the basis already shifted to the origin
+            if self.basis_shifted[i] is None:
+                self.basis_shifted[i] = torch.fft.fftshift(self.basis[i], dim=[-2, -1])
+            psf = torch.einsum('ijk,klm->ijlm', modes_nn, self.basis_shifted[i][0:n_active, :, :])
                         
             # Normalize PSF (with epsilon to avoid division by zero)        
             psf_norm[i] = psf / (torch.sum(psf, [-1, -2], keepdim=True) + 1e-12)
@@ -1022,8 +1023,14 @@ class Deconvolution(object):
         
         otf = [None] * self.n_o
         psf_norm = [None] * self.n_o
+        done = {}
 
         for i in range(self.n_o):
+            # Objects at the same wavelength share the pupil tensor: compute its PSF once
+            if id(self.pupil[i]) in done:
+                psf_norm[i], otf[i] = done[id(self.pupil[i])]
+                continue
+
             # Compute FFT of the pupil function and compute autocorrelation
             ft = torch.fft.fft2(self.pupil[i], norm=self.fft_norm)
             psf = (torch.conj(ft) * ft).real
@@ -1033,6 +1040,7 @@ class Deconvolution(object):
 
             # FFT of the PSF
             otf[i] = torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
+            done[id(self.pupil[i])] = (psf_norm[i], otf[i])
 
         return psf_norm, otf
     
