@@ -43,3 +43,10 @@ def test_marginal(make_synthetic_frames, object_error):
     # Fitted noise variance per frequency; with the ortho FFT it is the variance of the pixel noise
     s2 = decSI.pars_s2[0][:, 0]
     assert torch.all((s2 > 0.5 * sigma**2) & (s2 < 2.0 * sigma**2)), f'Fitted noise variance {s2.tolist()}, injected {sigma**2}'
+
+    # update_object with the cutoffs of the run gives back the run's object; a lower cutoff removes the
+    # frequencies above it
+    obj_run = decSI.obj[0].clone()
+    decSI.update_object(cutoffs=[[0.95, 0.99]])
+    change = torch.max(torch.abs(decSI.obj[0] - obj_run)) / torch.std(obj_run)
+    assert change < 1e-5, f'update_object with the same cutoffs changed the object by {change.item():.2e} of its std'

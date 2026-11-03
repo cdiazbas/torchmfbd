@@ -2150,8 +2150,7 @@ class Deconvolution(object):
                 obj_ft, obj_filter_ft, obj_filter = self.object_from_parameters(self.obj_infer_seq[i_seq], plane_seq)
 
             else:
-                pars_s0_arg = self.pars_s0_seq[i_seq] if self.loss_type == 'marginal' else None
-                pars_s2_arg = self.pars_s2_seq[i_seq] if (self.loss_type == 'marginal' and 'psd' in self.config) else None
+                pars_s0_arg, pars_s2_arg = self.pars_raw_seq[i_seq]
                 obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, otf, sigma_seq, plane_seq, pars_s0=pars_s0_arg, pars_s2=pars_s2_arg)  
                                    
 
@@ -2420,6 +2419,7 @@ class Deconvolution(object):
         self.modes_seq = [None] * n_sequences
         self.pars_s0_seq = [None] * n_sequences
         self.pars_s2_seq = [None] * n_sequences
+        self.pars_raw_seq = [(None, None)] * n_sequences
         self.jitter_seq = [None] * n_sequences
         self.shift_seq = [None] * n_sequences
         self.loss = [None] * n_sequences
@@ -3037,6 +3037,11 @@ class Deconvolution(object):
                 self.shift_seq[i_seq] = (shift_x.detach(), shift_y.detach())
             self.pars_s0_seq[i_seq] = self.pars_s0_out if not infer_object and self.loss_type == 'marginal' else None
             self.pars_s2_seq[i_seq] = self.pars_s2_out if not infer_object and self.loss_type == 'marginal' and 'psd' in self.config else None
+            # pars_s0_seq and pars_s2_seq hold K, v0, p and s2 themselves; compute_object takes the untransformed
+            # parameters, so update_object reuses the ones the final object was computed with
+            if not infer_object and self.loss_type == 'marginal':
+                self.pars_raw_seq[i_seq] = (pars_s0_torch.detach().clone(),
+                                            pars_s2_torch.detach().clone() if 'psd' in self.config else None)
             self.loss[i_seq] = losses.detach()
 
             for i in range(self.n_o):
