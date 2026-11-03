@@ -113,6 +113,9 @@ class Deconvolution(object):
 
         self.psf_model = self.config['psf']['model']
 
+        if self.psf_model.lower() in ['nmf', 'vae'] and self.use_jitter != 'none':
+            raise ValueError(f"psf.jitter = {self.use_jitter} is only implemented for the zernike and kl PSF models, not for {self.psf_model}")
+
         self.loss_type = self.config['optimization']['loss_type']
         
         # Whether to take into account the piston mode
@@ -797,19 +800,20 @@ class Deconvolution(object):
             # Compute the jitter OTF
             jitter_otf = torch.fft.fft2(jitter_psf)
 
-        if self.use_jitter == 'fast' and n_active > 20:
-                
-            sigma_x = torch.exp(jitter[:, :, 0])
-            sigma_y = torch.exp(jitter[:, :, 1])
-            rho_xy = torch.tanh(jitter[:, :, 2]) * sigma_x * sigma_y
-            
-            tx = self.f_x[i][None, None, :, :]**2 * sigma_x[:, :, None, None]**2 
-            ty = self.f_y[i][None, None, :, :]**2 * sigma_y[:, :, None, None]**2
-            txy = 2 * self.f_x[i][None, None, :, :] * self.f_y[i][None, None, :, :] * rho_xy[:, :, None, None]
-
-            jitter_otf = torch.exp(-2 * np.pi**2 * (tx + ty + txy))
-                    
         for i in range(self.n_o):            
+
+            # Gaussian jitter OTF; f_x, f_y are in cycles per pixel
+            if self.use_jitter == 'fast' and n_active > 20:
+                sigma_x = torch.exp(jitter[:, :, 0])
+                sigma_y = torch.exp(jitter[:, :, 1])
+                rho_xy = torch.tanh(jitter[:, :, 2]) * sigma_x * sigma_y
+
+                tx = self.f_x[i][None, None, :, :]**2 * sigma_x[:, :, None, None]**2 
+                ty = self.f_y[i][None, None, :, :]**2 * sigma_y[:, :, None, None]**2
+                txy = 2 * self.f_x[i][None, None, :, :] * self.f_y[i][None, None, :, :] * rho_xy[:, :, None, None]
+
+                jitter_otf = torch.exp(-2 * np.pi**2 * (tx + ty + txy))
+
             # Compute wavefronts from estimated modes                
             wavefront = torch.einsum('ijk,klm->ijlm', modes, self.basis[i][0:n_active, :, :])
             
@@ -1011,7 +1015,8 @@ class Deconvolution(object):
             if sigma.dim() == 1:
                 sigma_1 = sigma[:, None, None].cpu().numpy()
             elif sigma.dim() == 2:
-                sigma_1 = sigma[:, :, None].cpu().numpy()
+                # per-frame variances (n_seq, n_f): one noise level per sequence
+                sigma_1 = torch.mean(sigma, dim=1)[:, None, None].cpu().numpy()
             else:
                 sigma_1 = torch.mean(sigma, axis=-1)[:, None, None].cpu().numpy()
         else:
@@ -1487,16 +1492,20 @@ class Deconvolution(object):
             if self.loss_filter == 'lowpass':
 
                 s_u, s2, K, v0, p = self.get_su_s2(obj=i, sigma=sigma)
+
+                # One noise variance per sequence, (n_seq, 1, 1)
+                s2_seq = torch.mean(sigma[i]**2, dim=1)[:, None, None]
                                 
                 du = frames_ft[i]
-                hu2 = s2[:, None, None] + s_u * torch.sum(otf[i] * torch.conj(otf[i]), dim=1)
+                Q = torch.sum(otf[i] * torch.conj(otf[i]), dim=1).real
+                hu2 = s2_seq + s_u * Q
                 du2 = torch.sum(du * torch.conj(du), dim=1)
-                hu_du = torch.sum(torch.conj(du) * otf[i], dim=1)
-                hu_du2 = s_u * hu_du * torch.conj(hu_du)
-                                
-                loss_data = 0.5 * (du2 - hu_du2 / hu2) / s2[:, None, None]
+                hu_du = torch.sum(du * torch.conj(otf[i]), dim=1)
+                hu_du2 = hu_du * torch.conj(hu_du)
+
+                loss_prior = torch.tensor(0.0).to(self.device)
                 
-                # Use Lofdahl & Scharmer (1994) filter
+                # Wiener data term restricted to the support of the Lofdahl & Scharmer (1994) filter
                 if (self.image_filter[i] == 'scharmer'):
 
                     # We assume, for the moment, that the noise is the same for all frames
@@ -1504,14 +1513,16 @@ class Deconvolution(object):
                     Sconj_I = torch.sum(torch.conj(otf[i]) * frames_ft[i], dim=1)
 
                     mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, sigma[i]**2) * self.mask_diffraction_th[i][None, :, :]
-                                
-                    loss_data *= mask
-                    loss_prior = torch.tensor(0.0).to(self.device)
-                    loss = loss_data
+
+                    loss_data = 0.5 * (du2 - s_u * hu_du2 / hu2) / s2_seq * mask
                 
-                # Use simple Wiener filter with tophat prior            
-                if (self.image_filter[i] == 'tophat'):                    
-                    loss = t1 - self.mask_diffraction_th[i][None, :, :] * t2 * torch.conj(t2) / (Q + 1e-10)
+                # Gonsalves error metric (no object prior) inside the diffraction cutoff; the floor is
+                # relative to the largest sum |S|^2 of each sequence, Q = 0 only beyond the cutoff
+                if (self.image_filter[i] == 'tophat'):
+                    Q_floor = 1e-6 * torch.amax(Q, dim=(-1, -2), keepdim=True)
+                    loss_data = 0.5 * (du2 - self.mask_diffraction_th[i][None, :, :] * hu_du2 / (Q + Q_floor)) / s2_seq
+
+                loss = loss_data
 
             
             # Weighted version of the loss computation
@@ -1650,7 +1661,8 @@ class Deconvolution(object):
 
         if XY is not None:
             if not torch.is_tensor(XY):
-                self.XY = XY.astype('float32')
+                # stored as a tensor: the metapupil projection reads self.XY.cpu()
+                self.XY = torch.tensor(np.asarray(XY, dtype='float32'))
             else:
                 self.XY = XY
 
@@ -2359,25 +2371,25 @@ class Deconvolution(object):
                     self.pars_s2_out = torch.tensor(self.pars_s2_out.astype('float32')).to(self.device)
                     parameters.append({'params': pars_s2_torch, 'lr': self.lr_prior})
 
-                # Fast jitter, faster than the integration time
-                if self.use_jitter == 'fast':
-                    jitter = np.zeros((n_seq, self.n_f, 3))
-                    jitter[:, :, 0] = -2.0
-                    jitter[:, :, 1] = -2.0
-                    jitter[:, :, 2] = 0.01
+            # Fast jitter, faster than the integration time (both branches: the closure reads jitter_torch)
+            if self.use_jitter == 'fast':
+                jitter = np.zeros((n_seq, self.n_f, 3))
+                jitter[:, :, 0] = -2.0
+                jitter[:, :, 1] = -2.0
+                jitter[:, :, 2] = 0.01
 
-                    jitter_torch = torch.tensor(jitter.astype('float32')).to(self.device).requires_grad_(True)
-                    if self.lr_modes > 0:
-                        parameters.append({'params': jitter_torch, 'lr': self.lr_modes})
-
-                # Slow jitter, parameterized in terms of a Bezier curve with 3 ccontrol points
-                # The first one is always at (0, 0)
-                if self.use_jitter == 'slow':
-                    jitter = 0.3*np.random.randn(n_seq, self.n_f, 2, 2)
-                    jitter = np.zeros((n_seq, self.n_f, 2, 2))
-                    
-                    jitter_torch = torch.tensor(jitter.astype('float32')).to(self.device).requires_grad_(True)
+                jitter_torch = torch.tensor(jitter.astype('float32')).to(self.device).requires_grad_(True)
+                if self.lr_modes > 0:
                     parameters.append({'params': jitter_torch, 'lr': self.lr_modes})
+
+            # Slow jitter, parameterized in terms of a Bezier curve with 3 ccontrol points
+            # The first one is always at (0, 0)
+            if self.use_jitter == 'slow':
+                jitter = 0.3*np.random.randn(n_seq, self.n_f, 2, 2)
+                jitter = np.zeros((n_seq, self.n_f, 2, 2))
+                
+                jitter_torch = torch.tensor(jitter.astype('float32')).to(self.device).requires_grad_(True)
+                parameters.append({'params': jitter_torch, 'lr': self.lr_modes})
 
             # Second order optimizer
             if optimizer == 'lbfgs':
@@ -2555,14 +2567,12 @@ class Deconvolution(object):
                 # if self.loss_type == 'marginal':
                     # opt.param_groups[1]['lr'] *= 0.99                                
                 
-                if self.handle is not None:
+                tmp = OrderedDict()
+
+                # handle is None on CPU and on CUDA without nvitop
+                if self.cuda and self.handle is not None:
                     gpu_usage = f'{self.handle.gpu_utilization():03d}'
                     memory_usage = f'{self.handle.memory_used() / 1024**2:4.1f}/{self.handle.memory_total() / 1024**2:4.1f} MB'
-                    memory_pct = f'{self.handle.memory_used() / self.handle.memory_total() * 100.0:4.1f}%'
-                                   
-                tmp = OrderedDict()
-                
-                if self.cuda:
                     tmp['gpu'] = f'{gpu_usage} %'
                     tmp['mem'] = f'{memory_usage}'
 

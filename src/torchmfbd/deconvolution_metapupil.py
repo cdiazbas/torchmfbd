@@ -134,7 +134,7 @@ class DeconvolutionMetapupils(Deconvolution):
 
             # We need to take piston into account always
             n_modes = self.n_modes_height[i]
-            self.define_basis(n_modes)
+            self._define_basis(n_modes)
             self.pupil_meta[i] = self.pupil
             self.basis_meta[i] = self.basis
 
@@ -258,6 +258,11 @@ class DeconvolutionMetapupils(Deconvolution):
         # first order/Second order optimizer
         parameters = [{'params': modes, 'lr': self.lr_modes}]
 
+        # 'first'/'second' are the names in the docstring and the default
+        optimizer = {'first': 'adam', 'second': 'lbfgs'}.get(optimizer, optimizer)
+        if optimizer not in ['lbfgs', 'adam', 'adamw']:
+            raise ValueError(f"Optimizer {optimizer} not supported")
+
         if optimizer == 'lbfgs':
             self.logger.info(f"Using LBFGS optimizer...")
             opt = torch.optim.LBFGS(parameters, lr=0.01)
@@ -340,7 +345,8 @@ class DeconvolutionMetapupils(Deconvolution):
                 # modes -> (n_seq, n_f, self.n_modes)                                    
                 psf, psf_ft = self.compute_psfs(modes, n_active, projection_seq, diversity_seq)
                 
-                if self.show_object_info or loop == n_iterations - 1:
+                # The object is needed for the progress bar, for any object regularization and at the end
+                if self.show_object_info or loop == n_iterations - 1 or len(self.index_regularization['object']) > 0:
                     obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, psf_ft, sigma_seq, plane_seq)                        
 
                 loss_mse = torch.tensor(0.0).to(self.device)
@@ -362,7 +368,8 @@ class DeconvolutionMetapupils(Deconvolution):
                                                     
                 # Save some information for the progress bar
                 self.loss_local = loss.detach()
-                self.obj_filter = [None] * self.n_o                
+                if self.show_object_info:
+                    self.obj_filter = [o.detach() for o in obj_filter]
                 self.loss_mse_local = loss_mse.detach()
                 self.loss_obj_local = loss_obj.detach()
 
@@ -372,14 +379,13 @@ class DeconvolutionMetapupils(Deconvolution):
 
                 # scheduler.step()
 
-                if self.cuda:
+                tmp = OrderedDict()                
+
+                # handle is None on CUDA without nvitop (and on CPU)
+                if self.cuda and self.handle is not None:
                     gpu_usage = f'{self.handle.gpu_utilization()}'            
                     memory_usage = f'{self.handle.memory_used() / 1024**2:4.1f}/{self.handle.memory_total() / 1024**2:4.1f} MB'
                     memory_pct = f'{self.handle.memory_used() / self.handle.memory_total() * 100.0:4.1f}%'
-                                   
-                tmp = OrderedDict()                
-                
-                if self.cuda:
                     tmp['gpu'] = f'{gpu_usage} %'
                     tmp['mem'] = f'{memory_usage} ({memory_pct})'
 
