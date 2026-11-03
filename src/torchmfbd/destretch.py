@@ -31,7 +31,7 @@ def destretch(frames,
         frames (torch.Tensor): Input tensor of shape (n_seq, n_o, n_f, n_x, n_y) representing the sequence of frames.
         ngrid (int, optional): Grid size for the tip-tilt estimation. Default is 32.
         lr (float, optional): Learning rate for the optimizer. Default is 0.01.
-        reference_frame (int, optional): Index of the reference frame to which other frames are aligned. Default is 0.
+        reference_frame (int or 'avg', optional): Index of the reference frame to which other frames are aligned, or 'avg' for the per-pixel median of the frames. Default is 0.
         border (int, optional): Border size to exclude from the loss computation. Default is 10.
         n_iterations (int, optional): Number of optimization iterations. Default is 20.
         lambda_tt (float, optional): Regularization parameter for the tip-tilt smoothness. Default is 0.1.
@@ -203,6 +203,8 @@ def align(frames,
         mode (str, optional): Interpolation mode for the warping. Default is 'bilinear' ('nearest'/'bilinear').        
         padding_mode (str, optional): Padding mode for the warping. Default is 'reflection' ('zeros'/'border'/'reflection').
         no_shear (bool, optional): If True, only optimize for rotation and translation (no shear). Default is False.
+        no_rotation (bool, optional): If True, only optimize for a translation. Default is False.
+        return_grid (bool, optional): If True, also return the sampling grid of the final warp. Default is False.
     Returns:
         tuple: A tuple containing:
             - warped (torch.Tensor): Warped frames after alignment.
@@ -215,7 +217,12 @@ def align(frames,
     finite_difference = util.FiniteDifference().to(frames.device)
     
     
-    if no_shear:
+    if no_rotation:
+        # translation only: the rotation/scale/shear block stays the identity
+        pars = torch.zeros(2, dtype=torch.float32, device=device, requires_grad=True)
+        affine = torch.eye(2, 3, dtype=torch.float32, device=device)[None]
+        optimizer = torch.optim.Adam([pars], lr=lr)
+    elif no_shear:
         pars = torch.zeros(3, dtype=torch.float32, device=device, requires_grad=True)
         
         affine = np.zeros((1, 2, 3), dtype=np.float32)
@@ -242,7 +249,11 @@ def align(frames,
 
         optimizer.zero_grad()
 
-        if no_shear:
+        if no_rotation:
+            affine = torch.eye(2, 3, dtype=torch.float32, device=device)[None].clone()
+            affine[:, 0, 2] = pars[0]
+            affine[:, 1, 2] = pars[1]
+        elif no_shear:
             affine = torch.zeros((1, 2, 3), dtype=torch.float32, device=device)
             affine[:, 0, 0] = torch.cos(pars[0])
             affine[:, 0, 1] = -torch.sin(pars[0])
@@ -279,13 +290,13 @@ def align(frames,
         
         t.set_postfix(ordered_dict = tmp)
 
-    warped = warp_affine(im[None, ...], affine, mode=mode, padding_mode=padding_mode, return_grid=return_grid)[0, ...]
+    out = warp_affine(im[None, ...], affine, mode=mode, padding_mode=padding_mode, return_grid=return_grid)
         
     if return_grid:        
-        warped, grid = warped
-        return warped.detach(), affine.detach(), grid.detach()
+        warped, grid = out
+        return warped[0, ...].detach(), affine.detach(), grid.detach()
     else:
-        return warped.detach(), affine.detach()
+        return out[0, ...].detach(), affine.detach()
 
 
 def apply_align(frames, affine, mode='bicubic', padding_mode='reflection'):
@@ -323,7 +334,8 @@ def align_sequence(frames,
                 n_iterations=n_iterations,              
                 mode=mode,
                 padding_mode=padding_mode,
-                no_shear=no_shear
+                no_shear=no_shear,
+                no_rotation=no_rotation
                 )
     
         frames_out[i, ...] = out[0, :, :]

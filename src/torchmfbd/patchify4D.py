@@ -1,6 +1,7 @@
 import numpy as np
 import torch.nn.functional as F
 import torch
+import warnings
 from einops import rearrange
 
 import torch
@@ -34,6 +35,13 @@ class Patchify4D(object):
         
         self.Lx = np.floor((self.X + 2*self.P - self.D*(self.K-1) - 1) / self.S + 1).astype(int)
         self.Ly = np.floor((self.Y + 2*self.P - self.D*(self.K-1) - 1) / self.S + 1).astype(int)
+
+        # Pixels beyond the last full patch are not covered and do not come back from unpatchify
+        rx = self.X - ((self.Lx - 1) * self.S + self.K)
+        ry = self.Y - ((self.Ly - 1) * self.S + self.K)
+        if rx > 0 or ry > 0:
+            warnings.warn(f"patchify: (n - patch_size) is not a multiple of stride_size; the last {rx} rows and "
+                          f"{ry} columns are not covered by any patch and unpatchify will not return them")
         
         # We track the mask strictly for one frame internally to make broadcasting/slicing trivial later
         mask_base = torch.ones((*self.batch_shape, 1, self.nx, self.ny), device=x.device)
@@ -84,6 +92,16 @@ class Patchify4D(object):
         the original n_frames or if n_frames=1.
         """
         xndim = x.ndim
+
+        # Nested layout with the frame axis dropped, (*, L, K, K): restore it
+        if not self.flatten_sequences and xndim == len(self.batch_shape) + 3:
+            x = x.unsqueeze(-3)
+            xndim += 1
+
+        # A stride larger than the trimmed patch leaves pixels that no patch covers
+        if self.S > self.K - 2*apodization:
+            raise ValueError(f"stride_size = {self.S} is larger than patch_size - 2*apodization = {self.K - 2*apodization}: "
+                             f"the mosaic would have uncovered gaps")
         
         # 1. Determine incoming shape properties
         if self.flatten_sequences and xndim == 3:
@@ -121,7 +139,9 @@ class Patchify4D(object):
             self.weight = torch.exp(-R**2 / weight_params)
         elif weight_type == 'cosine':
             npix_apod = min(weight_params, npix//2)
-            win = np.hanning(2*npix_apod)
+            # Hann taper without its zero end points: a pixel covered by a single patch (mosaic
+            # border, seams when stride = patch size) keeps a non-zero weight instead of 0/0
+            win = np.hanning(2*npix_apod + 2)[1:-1]
             winOut = np.ones(npix)
             winOut[0:npix_apod] = win[0:npix_apod]
             winOut[-npix_apod:] = win[-npix_apod:]

@@ -199,7 +199,7 @@ def azimuthalAverage(image, center=None, stddev=False, returnradii=False, return
         # Find out which radial bin each point in the map belongs to
         whichbin = np.digitize(r.flat,bins)
         # This method is still very slow; is there a trick to do this with histograms? 
-        radial_prof = np.array([image.flat[mask.flat*(whichbin==b)].std() for b in xrange(1,nbins+1)])
+        radial_prof = np.array([image.flat[mask.flat*(whichbin==b)].std() for b in range(1,nbins+1)])
     else: 
         radial_prof = np.histogram(r, bins, weights=(image*weights*mask))[0] / np.histogram(r, bins, weights=(mask*weights))[0]
 
@@ -207,8 +207,8 @@ def azimuthalAverage(image, center=None, stddev=False, returnradii=False, return
         radial_prof = np.interp(bin_centers,bin_centers[radial_prof==radial_prof],radial_prof[radial_prof==radial_prof],left=left,right=right)
 
     if steps:
-        xarr = np.array(zip(bins[:-1],bins[1:])).ravel() 
-        yarr = np.array(zip(radial_prof,radial_prof)).ravel() 
+        xarr = np.array(list(zip(bins[:-1],bins[1:]))).ravel() 
+        yarr = np.array(list(zip(radial_prof,radial_prof))).ravel() 
         return xarr,yarr
     elif returnradii: 
         return bin_centers,radial_prof
@@ -334,9 +334,9 @@ def radialAverage(image, center=None, stddev=False, returnAz=False, return_naz=F
     # recall that bins are from 1 to nbins (which is expressed in array terms by arange(nbins)+1 or xrange(1,nbins+1) )
     # azimuthal_prof.shape = bin_centers.shape
     if stddev:
-        azimuthal_prof = np.array([image.flat[mask*(whichbin==b)].std() for b in xrange(1,nbins+1)])
+        azimuthal_prof = np.array([image.flat[mask*(whichbin==b)].std() for b in range(1,nbins+1)])
     else:
-        azimuthal_prof = np.array([(image*weights).flat[mask*(whichbin==b)].sum() / weights.flat[mask*(whichbin==b)].sum() for b in xrange(1,nbins+1)])
+        azimuthal_prof = np.array([(image*weights).flat[mask*(whichbin==b)].sum() / weights.flat[mask*(whichbin==b)].sum() for b in range(1,nbins+1)])
 
     #import pdb; pdb.set_trace()
 
@@ -347,8 +347,8 @@ def radialAverage(image, center=None, stddev=False, returnAz=False, return_naz=F
             left=left,right=right)
 
     if steps:
-        xarr = np.array(zip(bins[:-1],bins[1:])).ravel() 
-        yarr = np.array(zip(azimuthal_prof,azimuthal_prof)).ravel() 
+        xarr = np.array(list(zip(bins[:-1],bins[1:]))).ravel() 
+        yarr = np.array(list(zip(azimuthal_prof,azimuthal_prof))).ravel() 
         return xarr,yarr
     elif returnAz: 
         return bin_centers,azimuthal_prof

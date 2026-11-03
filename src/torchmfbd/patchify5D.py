@@ -90,7 +90,11 @@ class Patchify5D(object):
             x = x[:, :, :, apodization:-apodization, apodization:-apodization]
             mask = mask[:, :, :, apodization:-apodization, apodization:-apodization]
 
-        output_size = (self.output_size[0] - 2*apodization, self.output_size[1] - 2*apodization)
+        # Size covered by the patches (pixels beyond the last full patch have no patch: 0/0 = NaN before)
+        Lx = (self.output_size[0] - self.patch_size) // self.stride_size + 1
+        Ly = (self.output_size[1] - self.patch_size) // self.stride_size + 1
+        output_size = ((Lx - 1) * self.stride_size + self.patch_size - 2*apodization,
+                       (Ly - 1) * self.stride_size + self.patch_size - 2*apodization)
         patch_size = self.patch_size - 2*apodization
         stride_size = self.stride_size
                 
@@ -123,7 +127,7 @@ if __name__ == '__main__':
     
     frames = torch.randn(n_scans, n_obj, n_frames, n_x, n_y)
 
-    p = Patchify()
+    p = Patchify5D()
 
     patches = p.patchify(frames, patch_size=20, stride_size=10)
 

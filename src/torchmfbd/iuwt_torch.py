@@ -23,10 +23,12 @@ def bspline_star(x, step):
         kernel[KS2-step] = C2
         kernel[KS2] = C3
     
-    kernelx = kernel[None, None, :, None].to(x.device)
-    kernely = kernel[None, None, None, :].to(x.device)
-    x = F.conv2d(x, kernelx, padding='same')
-    x = F.conv2d(x, kernely, padding='same')
+    # one filter per channel (depthwise), so (B, C, H, W) inputs with C > 1 are smoothed channel by channel
+    C = x.shape[-3]          # (B, C, H, W) or unbatched (C, H, W), as RegularizationIUWT passes
+    kernelx = kernel[None, None, :, None].to(x.device).repeat(C, 1, 1, 1)
+    kernely = kernel[None, None, None, :].to(x.device).repeat(C, 1, 1, 1)
+    x = F.conv2d(x, kernelx, padding='same', groups=C)
+    x = F.conv2d(x, kernely, padding='same', groups=C)
     
     return x
 
@@ -54,7 +56,8 @@ def starlet_transform(input_image, num_bands = None, gen2 = True):
     '''
 
     if num_bands == None:
-        num_bands = int(np.ceil(np.log2(np.min(input_image.shape))) - 3)
+        # smallest spatial dimension (not the batch or channel axis)
+        num_bands = int(np.ceil(np.log2(np.min(input_image.shape[-2:]))) - 3)
         assert num_bands > 0
 
 
