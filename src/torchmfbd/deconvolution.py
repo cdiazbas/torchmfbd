@@ -159,7 +159,7 @@ class Deconvolution(object):
 
         # Do some output
         self.logger.info(f"Telescope")        
-        self.logger.info(f"  * D: {self.config['telescope']['diameter']} m")
+        self.logger.info(f"  * D: {self.config['telescope']['diameter']} cm")
         self.logger.info(f"  * pix: {self.config['images']['pix_size']} arcsec")
         
         # Bookkeeping for objects and diversity
@@ -1933,11 +1933,13 @@ class Deconvolution(object):
             for i in range(self.n_o):                
                 # Diffraction-limited object only for the wavefront models, as in deconvolve
                 if self.psf_model.lower() in ['zernike', 'kl']:
-                    obj_filter_diffraction[i] = torch.fft.ifft2(obj_filter_ft[i] * self.psf_diffraction_ft[i][None, :, :]).real.detach()
+                    obj_filter_diffraction[i] = torch.fft.ifft2(obj_filter_ft[i] * self.psf_diffraction_ft[i][None, :, :], norm=self.fft_norm).real.detach()
             
                 # Compute final degraded images
                 degraded_ft = obj_filter_ft[i][:, None, :, :] * otf[i]
-                degraded[i] = torch.fft.ifft2(degraded_ft).real
+                # obj_filter_ft is the unnormalised DFT of the object and otf the ortho OTF, so the product
+                # is the ortho spectrum of the degraded image (the default norm returned it 1/npix too low)
+                degraded[i] = torch.fft.ifft2(degraded_ft, norm=self.fft_norm).real
                         
             for i in range(self.n_o):
                 psf[i] = psf[i].detach().cpu()
@@ -2447,7 +2449,7 @@ class Deconvolution(object):
                         for i in range(self.n_o):
                             pars_s0[:, i, 0] = np.log(self.K_prior[0])
                             pars_s0[:, i, 1] = np.log(self.v0_prior[0])
-                            pars_s0[:, i, 2] = self.p_prior[0]
+                            pars_s0[:, i, 2] = np.log(self.p_prior[0])     # get_su_s2 reads p = exp(.)
                             pars_s0[:, i, 3] = np.log(sigma_seq[i].mean().item()**2)
                         self.pars_s0_out = np.zeros((n_seq, self.n_o, 4))
                         pars_s0_torch = torch.tensor(pars_s0.astype('float32')).to(self.device).requires_grad_(True)
@@ -2455,12 +2457,7 @@ class Deconvolution(object):
                         pars_s2_torch = None
                         if self.lr_prior > 0:
                             parameters.append({'params': pars_s0_torch, 'lr': self.lr_prior})
-                    for i in range(self.n_o):                        
-                        pars_s2[i, 0] = np.log(sigma_seq[i].mean().item()**2)
-                    self.pars_s2_out = np.zeros((self.n_o, 1))
-                    pars_s2_torch = torch.tensor(pars_s2.astype('float32')).to(self.device).requires_grad_(True)
-                    self.pars_s2_out = torch.tensor(self.pars_s2_out.astype('float32')).to(self.device)
-                    parameters.append({'params': pars_s2_torch, 'lr': self.lr_prior})
+                        # the noise variance of this format is pars_s0[..., 3]; no separate tensor
 
             # Fast jitter, faster than the integration time (both branches: the closure reads jitter_torch)
             if self.use_jitter == 'fast':
@@ -2685,11 +2682,17 @@ class Deconvolution(object):
                     tmp['lr'] = f'{opt.param_groups[0]["lr"]:6.3f}'
                 tmp['LDATA'] = f'{loss_data.detach().item():8.6f}'
                 tmp['LPRIOR'] = f'{loss_prior.detach().item():8.6f}'
-                if self.loss_type == 'marginal':
+                if self.loss_type == 'marginal' and self.pars_s0_out.ndim == 2:
                     tmp['K'] = f'{self.pars_s0_out[0][0].item() * self.npix:6.2f}'
                     tmp['v0'] = f'{self.pars_s0_out[0][1].item():6.2f}'
                     tmp['p'] = f'{self.pars_s0_out[0][2].item():6.2f}'
                     tmp['sig'] = f'{np.sqrt(self.pars_s2_out[0][0].item()):7.4f}'
+                if self.loss_type == 'marginal' and self.pars_s0_out.ndim == 3:
+                    # per-sequence format (n_seq, n_o, 4): K, v0, p, s2 of object 0, averaged over the batch
+                    tmp['K'] = f'{self.pars_s0_out[:, 0, 0].mean().item():6.2f}'
+                    tmp['v0'] = f'{self.pars_s0_out[:, 0, 1].mean().item():6.2f}'
+                    tmp['p'] = f'{self.pars_s0_out[:, 0, 2].mean().item():6.2f}'
+                    tmp['sig'] = f'{np.sqrt(self.pars_s0_out[:, 0, 3].mean().item()):7.4f}'
                 if self.use_jitter == 'fast':
                     tmp['sx'] = f'{torch.min(torch.exp(jitter_torch[:, :, 0])).item():6.3f}'
                     tmp['sy'] = f'{torch.min(torch.exp(jitter_torch[:, :, 1])).item():6.3f}'
@@ -2735,11 +2738,13 @@ class Deconvolution(object):
             degraded = [None] * self.n_o
             for i in range(self.n_o):                
                 if self.psf_model.lower() in ['zernike', 'kl']:
-                    obj_filter_diffraction[i] = torch.fft.ifft2(obj_filter_ft[i] * self.psf_diffraction_ft[i][None, :, :]).real
+                    obj_filter_diffraction[i] = torch.fft.ifft2(obj_filter_ft[i] * self.psf_diffraction_ft[i][None, :, :], norm=self.fft_norm).real
             
                 # Compute final degraded images
                 degraded_ft = obj_filter_ft[i][:, None, :, :] * otf[i]
-                degraded[i] = torch.fft.ifft2(degraded_ft).real
+                # obj_filter_ft is the unnormalised DFT of the object and otf the ortho OTF, so the product
+                # is the ortho spectrum of the degraded image (the default norm returned it 1/npix too low)
+                degraded[i] = torch.fft.ifft2(degraded_ft, norm=self.fft_norm).real
             
             # Store the results for the current set of sequences
             self.modes_seq[i_seq] = modes.detach()
