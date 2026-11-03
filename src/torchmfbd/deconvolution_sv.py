@@ -15,8 +15,13 @@ class DeconvolutionSV(Deconvolution):
         super().__init__(config)
         
         # self.ngrid_modes = config['ngrid_modes']
-        self.basis_file = self.config['psf']['filename']
         self.psf_model = self.config['psf']['model']
+
+        # Model first: zernike/kl/vae configurations have no psf.filename
+        if self.psf_model.lower() not in ['pca', 'nmf']:
+            raise Exception(f"Spatially variant deconvolution cannot be used with PSF model {self.psf_model}")
+
+        self.basis_file = self.config['psf']['filename']
         self.ngrid_modes = self.config['psf']['ngrid_modes']
 
         # PSF model parameterized with the PSF

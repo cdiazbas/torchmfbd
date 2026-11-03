@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
+# `from .vae import *` in __init__ must not rebind torchmfbd.optim (scipy.optimize) to torch.optim
+__all__ = ['LinearVAE', 'ConvVAE2D', 'vae_loss_function']
+
 class LinearVAE(nn.Module):
     def __init__(self, in_features: int, latent_dim: int, nested_dims: list = None):
         super(LinearVAE, self).__init__()
@@ -131,7 +134,8 @@ class ConvVAE2D(nn.Module):
         h = h.view(h.size(0), 256, self.spatial_dim, self.spatial_dim)
         logits = self.decoder_deconv(h)
         
-        # Softplus activation forces all output pixel intensities to be non-negative (>= 0)
+        # Raw logits: the standardised log-PSF. Deconvolution.compute_psfs_vae de-standardises
+        # them and takes a softmax over the pixels, which makes the PSF positive with unit sum
         return logits
 
     def forward(self, x):

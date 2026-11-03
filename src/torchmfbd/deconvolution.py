@@ -367,9 +367,19 @@ class Deconvolution(object):
 
                     n_psf = int(np.sqrt(f['basis'].shape[1]))
 
+                    if f['basis'].shape[0] < self.n_modes:
+                        raise ValueError(f"The NMF basis file has {f['basis'].shape[0]} modes but psf.nmax_modes requests {self.n_modes}")
+
                     basis = f['basis'][0:self.n_modes, :].reshape((self.n_modes, n_psf, n_psf))
 
-                    basis = basis[:, n_psf//2 - self.npix//2:n_psf//2 + self.npix//2, n_psf//2 - self.npix//2:n_psf//2 + self.npix//2]
+                    # Crop or zero-pad to npix keeping the centre pixel n_psf//2 at npix//2
+                    if n_psf >= self.npix:
+                        i0 = n_psf//2 - self.npix//2
+                        basis = basis[:, i0:i0 + self.npix, i0:i0 + self.npix]
+                    else:
+                        left = self.npix//2 - n_psf//2
+                        right = self.npix - n_psf - left
+                        basis = np.pad(basis, ((0, 0), (left, right), (left, right)), mode='constant')
                                     
                 pupil = torch.tensor(pupil.astype('float32')).to(self.device)
                 basis = torch.tensor(basis[0:self.n_modes, :, :].astype('float32')).to(self.device)
@@ -402,8 +412,11 @@ class Deconvolution(object):
                
 # Get a Traversable path object to the file
                 filename = importlib.resources.files("torchmfbd").joinpath("vae", "nonlinear_matryoshka_z_200_beta_0.1.pth")
-                
-                checkpoint = torch.load(filename, map_location=lambda storage, loc: storage, weights_only=False)
+
+                # The checkpoint (46 MB) is read once per instance, not per wavelength and per deconvolve()
+                if getattr(self, '_vae_checkpoint', None) is None:
+                    self._vae_checkpoint = torch.load(filename, map_location=lambda storage, loc: storage, weights_only=False)
+                checkpoint = self._vae_checkpoint
 
                 self.x_vae_mean = torch.tensor(checkpoint['x_mean'].astype('float32')).to(self.device)
                 self.x_vae_std = torch.tensor(checkpoint['x_std'].astype('float32')).to(self.device)
@@ -420,6 +433,9 @@ class Deconvolution(object):
 
                 self.model_vae.load_state_dict(checkpoint['state_dict'])
                 self.model_vae.eval()
+
+                # The decoder is a fixed prior: no gradients for its 1.5 M weights
+                self.model_vae.requires_grad_(False)
 
                 self.logger.info(f"VAE is trained for PSFs of size {n_pixel}x{n_pixel} pixels with latent dimension {latent_dim}")
                 if n_pixel > self.npix:
@@ -929,21 +945,24 @@ class Deconvolution(object):
         decoded_psfs = rearrange(decoded_psfs, '(ns nf) 1 h w -> ns nf h w', ns=n_seq)  # Reshape back to (n_seq, n_f, H, W)
 
         decoded_psfs = decoded_psfs * (self.x_vae_std + 1e-8) + self.x_vae_mean
-        decoded_psfs = torch.exp(decoded_psfs + 1e-10)
 
-        # The VAE generates PSFs of size 64x64. We need to adapt them to the desired patch size
-        if decoded_psfs.shape[-1] < self.npix:            
-            decoded_psfs = F.pad(decoded_psfs, ((self.npix - decoded_psfs.shape[-2]) // 2, 
-                                                (self.npix - decoded_psfs.shape[-2]) // 2, 
-                                                (self.npix - decoded_psfs.shape[-1]) // 2, 
-                                                (self.npix - decoded_psfs.shape[-1]) // 2))
-        if decoded_psfs.shape[-1] > self.npix:
-            decoded_psfs = decoded_psfs[:, :, (decoded_psfs.shape[-2] - self.npix) // 2 : (decoded_psfs.shape[-2] + self.npix) // 2,
-                                          (decoded_psfs.shape[-1] - self.npix) // 2 : (decoded_psfs.shape[-1] + self.npix) // 2]
-            
-            
+        # PSF = exp(log-PSF) normalised to unit sum, as a softmax over the pixels: the maximum is
+        # subtracted, so large latents cannot overflow exp()
+        h, w = decoded_psfs.shape[-2:]
+        decoded_psfs = torch.softmax(decoded_psfs.reshape(decoded_psfs.shape[0], decoded_psfs.shape[1], h * w), dim=-1).reshape(decoded_psfs.shape)
 
-        decoded_psfs = torch.fft.fftshift(decoded_psfs, dim=[-2, -1])
+        # The VAE generates PSFs of size 64x64. Crop or zero-pad to npix keeping the centre pixel n//2 at npix//2
+        n = decoded_psfs.shape[-1]
+        if n > self.npix:
+            i0 = n // 2 - self.npix // 2
+            decoded_psfs = decoded_psfs[:, :, i0:i0 + self.npix, i0:i0 + self.npix]
+        if n < self.npix:
+            left = self.npix // 2 - n // 2
+            right = self.npix - n - left
+            decoded_psfs = F.pad(decoded_psfs, (left, right, left, right))
+
+        # Centre pixel npix//2 to the origin (ifftshift; fftshift differs for odd npix)
+        decoded_psfs = torch.fft.ifftshift(decoded_psfs, dim=[-2, -1])
         
         for i in range(self.n_o):
             # Normalize PSF (with epsilon to avoid division by zero)
@@ -1560,6 +1579,41 @@ class Deconvolution(object):
         return loss_data_total, loss_prior_total, loss_total
 
     
+    def psfs_from_parameters(self, modes, diversity, n_active, jitter=None, shift=None):
+        """
+        PSFs and OTFs from the fitted parameters, built as the closure builds them: the first
+        n_active modes, tip-tilt referenced to frame 0 (and zeroed if psf.remove_tt) for the
+        wavefront models, VAE shifts referenced to frame 0.
+
+        Parameters
+        ----------
+        modes : torch.Tensor
+            (n_seq, n_f, n_modes) coefficients or latents.
+        diversity : list of torch.Tensor
+            Diversity per object, (n_seq, n_frames).
+        n_active : int
+            Number of active modes in the last optimisation step.
+        jitter : torch.Tensor, optional
+        shift : tuple of torch.Tensor, optional
+            (shift_x, shift_y) of the VAE, (n_seq, n_f).
+        """
+        if self.psf_model.lower() in ['zernike', 'kl']:
+            modes_centered = modes.clone()
+            modes_centered[:, :, 0:2] = modes_centered[:, :, 0:2] - modes[:, 0:1, 0:2]
+            if self.remove_tt:
+                modes_centered[:, :, 0:2] = 0.0
+            return self.compute_psfs(modes_centered[..., 0:n_active], diversity, jitter=jitter)
+
+        if self.psf_model.lower() == 'nmf':
+            return self.compute_psfs_nmf(modes[..., 0:n_active])
+
+        if self.psf_model.lower() == 'vae':
+            if shift is None:
+                shift = (torch.zeros(modes.shape[0:2], device=modes.device), torch.zeros(modes.shape[0:2], device=modes.device))
+            sx = shift[0] - shift[0][:, 0:1]
+            sy = shift[1] - shift[1][:, 0:1]
+            return self.compute_psfs_vae(modes[..., 0:n_active], shift_x=sx, shift_y=sy)
+
     def object_from_parameters(self, obj, plane=None):
         """
         Object, its spectrum and the filtered object from the optimised object parameters
@@ -1855,12 +1909,13 @@ class Deconvolution(object):
                 
             n_seq = len(seq)
 
-            if self.psf_model.lower() in ['zernike', 'kl']:
-                psf, otf = self.compute_psfs(self.modes_seq[i_seq], diversity_seq, jitter=self.jitter_seq[i_seq] if self.use_jitter != 'none' else None)
-            
             if self.psf_model.lower() == 'nmf':
                 sx, sy = self.shift_seq[i_seq] if self.shift_seq[i_seq] is not None else (None, None)
-                psf, otf = self.compute_psfs_nmf(self.modes_seq[i_seq], shift_x=sx, shift_y=sy)
+                psf, otf = self.compute_psfs_nmf(self.modes_seq[i_seq][..., 0:self.n_active_seq[i_seq]], shift_x=sx, shift_y=sy)
+            else:
+                psf, otf = self.psfs_from_parameters(self.modes_seq[i_seq], diversity_seq, self.n_active_seq[i_seq],
+                                                     jitter=self.jitter_seq[i_seq] if self.use_jitter != 'none' else None,
+                                                     shift=self.shift_seq[i_seq])
             
             if (self.infer_object):
 
@@ -1876,7 +1931,9 @@ class Deconvolution(object):
             obj_filter_diffraction = [None] * self.n_o
             degraded = [None] * self.n_o
             for i in range(self.n_o):                
-                obj_filter_diffraction[i] = torch.fft.ifft2(obj_filter_ft[i] * self.psf_diffraction_ft[i][None, :, :]).real
+                # Diffraction-limited object only for the wavefront models, as in deconvolve
+                if self.psf_model.lower() in ['zernike', 'kl']:
+                    obj_filter_diffraction[i] = torch.fft.ifft2(obj_filter_ft[i] * self.psf_diffraction_ft[i][None, :, :]).real.detach()
             
                 # Compute final degraded images
                 degraded_ft = obj_filter_ft[i][:, None, :, :] * otf[i]
@@ -1886,7 +1943,6 @@ class Deconvolution(object):
                 psf[i] = psf[i].detach().cpu()
                 degraded[i] = degraded[i].detach().cpu()
                 obj_filter[i] = obj_filter[i].detach()
-                obj_filter_diffraction[i] = obj_filter_diffraction[i].detach()
 
             self.psf_seq[i_seq] = psf
             self.degraded_seq[i_seq] = degraded
@@ -1918,10 +1974,11 @@ class Deconvolution(object):
             if self.time_present:
                 self.obj[i] = rearrange(self.obj[i], '(s t) h w -> s t h w', t=self.n_t, s=self.n_seq)
 
-            tmp = [self.obj_diffraction_seq[j][i] for j in range(n_sequences)]
-            self.obj_diffraction[i] = torch.cat(tmp, dim=0)
-            if self.time_present:
-                self.obj_diffraction[i] = rearrange(self.obj_diffraction[i], '(s t) h w -> s t h w', t=self.n_t, s=self.n_seq)
+            if self.psf_model.lower() in ['zernike', 'kl']:
+                tmp = [self.obj_diffraction_seq[j][i] for j in range(n_sequences)]
+                self.obj_diffraction[i] = torch.cat(tmp, dim=0)
+                if self.time_present:
+                    self.obj_diffraction[i] = rearrange(self.obj_diffraction[i], '(s t) h w -> s t h w', t=self.n_t, s=self.n_seq)
         
         return 
     
@@ -2038,6 +2095,12 @@ class Deconvolution(object):
 
         # Define all basis
         self._define_basis()
+
+        # Phase diversity acts on the wavefront; the nmf and vae PSFs have none
+        if self.psf_model.lower() in ['nmf', 'vae']:
+            for i in range(self.n_o):
+                if len(self.init_frame_diversity[i]) > 1:
+                    raise ValueError(f"Phase diversity ({len(self.init_frame_diversity[i])} channels for object {i}) needs a wavefront PSF model (zernike or kl), not {self.psf_model}")
         
         # Fill the list of frames and apodize the frames if needed
         # for i in range(self.n_o):
@@ -2137,6 +2200,7 @@ class Deconvolution(object):
         self.obj_seq = [None] * n_sequences
         self.obj_diffraction_seq = [None] * n_sequences
         self.obj_infer_seq = [None] * n_sequences
+        self.n_active_seq = [None] * n_sequences
 
         tinit = time.time()
         tinit_global = time.time()
@@ -2312,12 +2376,17 @@ class Deconvolution(object):
                         self.shift_x = torch.zeros((n_seq, self.n_f), device=self.device, requires_grad=True)
                         self.shift_y = torch.zeros((n_seq, self.n_f), device=self.device, requires_grad=True)
 
-                # Unknowns for VAE modes
+                # Unknowns for VAE modes: latents ~ initialization.modes_std * N(0, 1), zeros for modes_std = 0
                 if self.psf_model.lower() == 'vae':
-                    self.logger.info(f"Initializing VAE modes with random values...")
-                    modes = torch.randn((n_seq, self.n_f, self.n_modes), device=self.device, requires_grad=True)
-                    shift_x = torch.zeros((n_seq, self.n_f), device=self.device, requires_grad=True)
-                    shift_y = torch.zeros((n_seq, self.n_f), device=self.device, requires_grad=True)
+                    std = self.config['initialization']['modes_std']
+                    self.logger.info(f"Initializing VAE latents with standard deviation {std}...")
+                    modes = std * torch.randn((n_seq, self.n_f, self.n_modes))
+                    modes = modes.to(self.device).requires_grad_(True)
+
+            # VAE tip-tilt (also when the latents come from modes_in)
+            if self.psf_model.lower() == 'vae':
+                shift_x = torch.zeros((n_seq, self.n_f), device=self.device, requires_grad=True)
+                shift_y = torch.zeros((n_seq, self.n_f), device=self.device, requires_grad=True)
                     
             if self.psf_model.lower() == 'nmf' and self.config['psf']['shift']:
                 self.logger.info(f"NMF: adding learnable PSF shift (shift_x, shift_y) to optimizer...")
@@ -2329,6 +2398,9 @@ class Deconvolution(object):
                 if self.psf_model.lower() == 'nmf' and self.config['psf']['shift']:
                     parameters.append({'params': self.shift_x, 'lr': self.lr_modes})
                     parameters.append({'params': self.shift_y, 'lr': self.lr_modes})
+                if self.psf_model.lower() == 'vae' and self.config['psf']['shift']:
+                    parameters.append({'params': shift_x, 'lr': self.lr_modes})
+                    parameters.append({'params': shift_y, 'lr': self.lr_modes})
                 obj = [None] * self.n_o
 
                 for i in range(self.n_o):
@@ -2448,13 +2520,13 @@ class Deconvolution(object):
 
             t = tqdm(range(n_iterations))
 
+            # zernike/kl start at the schedule's first value. nmf/vae start with all modes and drop to the
+            # schedule after the first step (audit v3 BUG-36, BUG-118): left as is on purpose, because
+            # starting the vae at 2 latents with zero-initialised latents (modes_std = 0, the shipped
+            # vae.yaml) was measured to triple the error vs a known truth (1.48 vs 0.59, 3 scenes)
             if self.psf_model.lower() in ['zernike', 'kl']:
-                n_active = 2
-            
-            if self.psf_model.lower() == 'nmf':
-                n_active = self.n_modes
-
-            if self.psf_model.lower() == 'vae':
+                n_active = int(self.anneal[0])
+            else:
                 n_active = self.n_modes
 
             modes_previous = modes.clone().detach()
@@ -2570,6 +2642,9 @@ class Deconvolution(object):
                     
                     return loss
                         
+                # Number of modes the closure fits in this step; the exported PSF uses the last one
+                n_active_fit = n_active
+
                 loss = opt.step(closure)
 
                 losses[loop] = loss.detach()
@@ -2636,20 +2711,12 @@ class Deconvolution(object):
 
             self.total_time_convergence += self.tf_convergence - self.t0_convergence
             
-            if self.psf_model.lower() in ['zernike', 'kl']:
-                modes_centered = modes.clone().detach()
-                modes_centered[:, :, 0:2] = modes_centered[:, :, 0:2] - modes_centered[:, 0:1, 0:2]
-                psf, otf = self.compute_psfs(modes_centered, diversity_seq, jitter=jitter_torch if self.use_jitter != 'none' else None)
-            
-            if self.psf_model.lower() == 'nmf':
-                psf, otf = self.compute_psfs_nmf(modes)
-
-            if self.psf_model.lower() == 'vae':
-                shift_x_centered = shift_x.clone()
-                shift_y_centered = shift_y.clone()
-                shift_x_centered = shift_x_centered - shift_x[:, 0:1]
-                shift_y_centered = shift_y_centered - shift_y[:, 0:1]
-                psf, otf = self.compute_psfs_vae(modes, shift_x=shift_x_centered, shift_y=shift_y_centered)
+            # PSFs exactly as in the last closure: same number of active modes, tip-tilt removed if
+            # psf.remove_tt, VAE shifts referenced to frame 0
+            with torch.no_grad():
+                psf, otf = self.psfs_from_parameters(modes.detach(), diversity_seq, n_active_fit,
+                                                     jitter=jitter_torch.detach() if self.use_jitter != 'none' else None,
+                                                     shift=(shift_x.detach(), shift_y.detach()) if self.psf_model.lower() == 'vae' else None)
                 
             if (infer_object):
                 
@@ -2676,9 +2743,12 @@ class Deconvolution(object):
             
             # Store the results for the current set of sequences
             self.modes_seq[i_seq] = modes.detach()
+            self.n_active_seq[i_seq] = n_active_fit
             self.jitter_seq[i_seq] = jitter_torch.detach() if self.use_jitter != 'none' else None
             if self.psf_model.lower() == 'nmf' and self.config['psf']['shift']:
                 self.shift_seq[i_seq] = (self.shift_x.detach(), self.shift_y.detach())
+            if self.psf_model.lower() == 'vae':
+                self.shift_seq[i_seq] = (shift_x.detach(), shift_y.detach())
             self.pars_s0_seq[i_seq] = self.pars_s0_out if not infer_object and self.loss_type == 'marginal' else None
             self.pars_s2_seq[i_seq] = self.pars_s2_out if not infer_object and self.loss_type == 'marginal' and 'psd' in self.config else None
             self.loss[i_seq] = losses.detach()
