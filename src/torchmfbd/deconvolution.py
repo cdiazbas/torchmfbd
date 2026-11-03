@@ -31,12 +31,52 @@ from astropy.io import fits
 from einops import rearrange
 from torchmfbd.vae import ConvVAE2D
 import importlib.resources
+from concurrent.futures import ThreadPoolExecutor
 try:
     import ncg_optimizer
     NGC_OPTIMIZER = True
 except:
     NGC_OPTIMIZER = False
     pass
+
+_FFT_POOL = None
+
+
+def _chunked_fft(fn, x):
+    """fn (fft2 or ifft2, norm='ortho') over the leading axes in chunks on a thread pool."""
+    global _FFT_POOL
+    n = torch.get_num_threads()
+    if _FFT_POOL is None or _FFT_POOL._max_workers != n:
+        _FFT_POOL = ThreadPoolExecutor(n)
+    flat = x.reshape(-1, *x.shape[-2:])
+    parts = list(_FFT_POOL.map(lambda c: fn(c, norm='ortho'), torch.tensor_split(flat, n, dim=0)))
+    return torch.cat(parts, dim=0).reshape(*x.shape[:-2], *parts[0].shape[-2:])
+
+
+class _ParallelFFT2(torch.autograd.Function):
+    """
+    Orthonormal 2-D FFT computed in chunks on a thread pool, for CPU builds of torch whose FFT
+    (pocketfft) runs on one thread. Each 2-D transform is the same call as in torch.fft.fft2, so the
+    result is bit-identical; the backward is the chunked ifft2, the adjoint of the unitary transform.
+    """
+    @staticmethod
+    def forward(ctx, x):
+        ctx.real_in = not x.is_complex()
+        return _chunked_fft(torch.fft.fft2, x)
+
+    @staticmethod
+    def backward(ctx, g):
+        gx = _chunked_fft(torch.fft.ifft2, g)
+        return gx.real if ctx.real_in else gx
+
+
+def fft2_ortho(x):
+    """torch.fft.fft2(x, norm='ortho'), threaded on CPU builds without MKL when the batch is large."""
+    if (x.device.type == 'cpu' and not torch.backends.mkl.is_available() and torch.get_num_threads() > 1
+            and x.ndim >= 3 and x.numel() // (x.shape[-1] * x.shape[-2]) >= 4 * torch.get_num_threads()):
+        return _ParallelFFT2.apply(x)
+    return torch.fft.fft2(x, norm='ortho')
+
 
 class Deconvolution(object):
     def __init__(self, config, add_piston=False):        
@@ -871,14 +911,14 @@ class Deconvolution(object):
             phase = self.pupil[i][None, None, :, :] * torch.exp(1j * wavef)
 
             # Compute FFT of the pupil function and compute autocorrelation
-            ft = torch.fft.fft2(phase, norm=self.fft_norm)
+            ft = fft2_ortho(phase) if self.fft_norm == 'ortho' else torch.fft.fft2(phase, norm=self.fft_norm)
             psf = (torch.conj(ft) * ft).real
             
             # Normalize PSF        
             psf_norm[i] = psf / torch.sum(psf, [-1, -2], keepdim=True)
 
             # FFT of the PSF
-            otf[i] = torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
+            otf[i] = fft2_ortho(psf_norm[i]) if self.fft_norm == 'ortho' else torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
 
             # If using jitter, multiply the OTFs
             if self.use_jitter == 'fast' and n_active > 20:
@@ -921,7 +961,7 @@ class Deconvolution(object):
             psf_norm[i] = psf / (torch.sum(psf, [-1, -2], keepdim=True) + 1e-12)
 
             # FFT of the PSF
-            otf[i] = torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
+            otf[i] = fft2_ortho(psf_norm[i]) if self.fft_norm == 'ortho' else torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
 
             # Apply Fourier-domain shift (tip-tilt substitute for NMF)
             # shift_x, shift_y are in pixels; shape: (n_seq,)
@@ -995,7 +1035,7 @@ class Deconvolution(object):
             psf_norm[i] = decoded_psfs / (torch.sum(decoded_psfs, dim=(-1, -2), keepdim=True) + 1e-12)
 
             # FFT of the PSF
-            otf[i] = torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
+            otf[i] = fft2_ortho(psf_norm[i]) if self.fft_norm == 'ortho' else torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
 
             # Apply Fourier-domain shift (tip-tilt substitute for NMF)
             # shift_x, shift_y are in pixels; shape: (n_seq,)                        
@@ -1039,7 +1079,7 @@ class Deconvolution(object):
             psf_norm[i] = psf / torch.sum(psf, dim=(-1, -2), keepdim=True)
 
             # FFT of the PSF
-            otf[i] = torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
+            otf[i] = fft2_ortho(psf_norm[i]) if self.fft_norm == 'ortho' else torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
             done[id(self.pupil[i])] = (psf_norm[i], otf[i])
 
         return psf_norm, otf
