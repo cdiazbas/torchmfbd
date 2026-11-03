@@ -9,5 +9,6 @@ class RegularizationTime(Regularization):
         self.lambda_reg = lambda_reg
 
     def __call__(self, x):
-                           
-        return 0.0
+        # The time coupling is solved inside compute_object (filter_loss wiener_time*); this class is only a
+        # placeholder and must not be added as a loss term that silently contributes zero
+        raise NotImplementedError("RegularizationTime has no loss term: use filter_loss wiener_time with a `time` regularization entry")

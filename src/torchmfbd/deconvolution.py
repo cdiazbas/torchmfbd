@@ -523,19 +523,26 @@ class Deconvolution(object):
         loop = 0
 
         # lambda_t of filter_loss wiener_time*; 0 unless a `time` entry sets it (lambda = 0 is a valid control run)
+        # The type of a regularization is the prefix of its key: smooth*, iuwt*, time*
+        def kind(k):
+            for prefix in ('smooth', 'iuwt', 'time'):
+                if k.startswith(prefix):
+                    return prefix
+            raise ValueError(f"Unknown regularization '{k}': the key must start with smooth, iuwt or time")
+
         self.time_regularization = 0.0
         for k, v in self.config['regularization'].items():
-            if 'time' in k:
+            if kind(k) == 'time':
                 self.time_regularization = float(v['lambda'])
 
         for k, v in self.config['regularization'].items():            
             if v['lambda'] != 0.0:
                 
-                if 'smooth' in k:                
+                if kind(k) == 'smooth':                
                     tmp = RegularizationSmooth(lambda_reg=v['lambda'], variable=v['variable'])
-                if 'iuwt' in k:
+                if kind(k) == 'iuwt':
                     tmp = RegularizationIUWT(lambda_reg=v['lambda'], variable=v['variable'], nbands=v['nbands'], n_pixel=self.npix)
-                if 'time' not in k:
+                if kind(k) != 'time':
                     self.regularization.append(tmp.to(self.device))
                     self.index_regularization[v['variable']].append(loop)
                     tmp.print()
@@ -920,6 +927,9 @@ class Deconvolution(object):
             sx = shift_x if shift_x is not None else (self.shift_x if self.config['psf']['shift'] else None)
             sy = shift_y if shift_y is not None else (self.shift_y if self.config['psf']['shift'] else None)
             if sx is not None and sy is not None:
+                # Referenced to the first frame of each sequence: a common shift of all PSFs is a shift of the object
+                sx = sx - sx[:, 0:1]
+                sy = sy - sy[:, 0:1]
                 freq_x = torch.fft.fftfreq(self.npix, device=self.device)  # (W,)
                 freq_y = torch.fft.fftfreq(self.npix, device=self.device)  # (H,)
                 fy, fx = torch.meshgrid(freq_y, freq_x, indexing='ij')     # (H, W)
