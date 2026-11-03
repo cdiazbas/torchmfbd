@@ -15,6 +15,7 @@ try:
 except ImportError:
     HAS_NVITOP = False
 import logging
+import warnings
 import torchmfbd.kl_modes as kl_modes
 import torchmfbd.noise as noise
 from torchmfbd.reg_smooth import RegularizationSmooth
@@ -2218,6 +2219,7 @@ class Deconvolution(object):
         self.obj_diffraction_seq = [None] * n_sequences
         self.obj_infer_seq = [None] * n_sequences
         self.n_active_seq = [None] * n_sequences
+        self.failed_batches = []
 
         tinit = time.time()
         tinit_global = time.time()
@@ -2526,8 +2528,6 @@ class Deconvolution(object):
             self.logger.info(f"Starting optimization with {n_iterations} iterations...")
             self.logger.info(f"Learning rates: modes {self.lr_modes} - object {self.lr_obj if infer_object else 'N/A'} - psd prior {self.lr_prior if not infer_object and self.loss_type == 'marginal' else 'N/A'}")
                 
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, 3*n_iterations)
-
             losses = torch.zeros(n_iterations, device=self.device)
 
             t = tqdm(range(n_iterations))
@@ -2544,12 +2544,17 @@ class Deconvolution(object):
             self.t0_convergence = time.time()
 
             flip = 0
+
+            # Last parameters at which the loss was finite, restored if the optimisation diverges
+            last_good = [p.detach().clone() for g in opt.param_groups for p in g['params']]
+            psd_frozen = False
                 
             for loop in t:
                                 
-                def closure():
+                def closure(backward=True):
                             
-                    opt.zero_grad(set_to_none=True)
+                    if backward:
+                        opt.zero_grad(set_to_none=True)
 
                     if self.psf_model.lower() in ['zernike', 'kl']:
                 
@@ -2637,10 +2642,11 @@ class Deconvolution(object):
                     # self.loss_mse_local = loss_mse.detach()
                     # self.loss_obj_local = loss_obj.detach()
 
-                    if optimizer == 'cg' and NGC_OPTIMIZER:
-                        loss.backward(retain_graph=True)
-                    else:
-                        loss.backward()
+                    if backward:
+                        if optimizer == 'cg' and NGC_OPTIMIZER:
+                            loss.backward(retain_graph=True)
+                        else:
+                            loss.backward()
 
                     self.loss_data_local = loss_data.detach()
                     self.loss_prior_local = loss_prior.detach()
@@ -2655,7 +2661,32 @@ class Deconvolution(object):
                 # Number of modes the closure fits in this step; the exported PSF uses the last one
                 n_active_fit = n_active
 
+                params_step = [p for g in opt.param_groups for p in g['params']]
+                snapshot = [p.detach().clone() for p in params_step]
+
                 loss = opt.step(closure)
+
+                # LBFGS returns the loss of the step's first evaluation and leaves the last line-search trial
+                # in the progress fields: evaluate the accepted point instead (forward only)
+                if optimizer == 'lbfgs':
+                    with torch.no_grad():
+                        loss = closure(backward=False)
+
+                # Adam's loss belongs to the parameters before the step, LBFGS's (above) to those after it
+                if torch.isfinite(loss):
+                    last_good = [p.detach().clone() for p in params_step] if optimizer == 'lbfgs' else snapshot
+
+                if not torch.isfinite(loss) or not all(bool(torch.isfinite(p).all()) for p in params_step):
+                    with torch.no_grad():
+                        for p, p_good in zip(params_step, last_good):
+                            p.copy_(p_good)
+                    msg = (f"Non-finite loss or parameters at iteration {loop} of sequence batch {i_seq}: "
+                           f"parameters restored to the last finite point and the optimisation of this batch stopped")
+                    self.logger.warning(msg)
+                    warnings.warn(msg, RuntimeWarning)
+                    self.failed_batches.append(i_seq)
+                    losses[loop:] = float('nan')
+                    break
 
                 losses[loop] = loss.detach()
 
@@ -2717,10 +2748,21 @@ class Deconvolution(object):
                 t.set_postfix(ordered_dict=tmp)
                 
                 n_active = self.anneal[loop]
-                if self.loss_type == 'marginal':
-                    if n_active > self.stop_psd:
-                        if len(opt.param_groups) > 1:
-                            opt.param_groups[1]['lr'] = 0.0
+
+                # Freeze the PSD hyper-parameters (K, v0, p and the noise variance) once enough modes are active
+                if self.loss_type == 'marginal' and not infer_object and not psd_frozen and n_active > self.stop_psd:
+                    psd_frozen = True
+                    frozen = [pars_s0_torch]
+                    if optimizer == 'lbfgs':
+                        # LBFGS keeps all parameters in one group: rebuild it without the frozen ones
+                        opt = torch.optim.LBFGS([p for p in params_lbfgs if all(p is not f for f in frozen)],
+                                                lr=self.lr_modes, line_search_fn='strong_wolfe')
+                    else:
+                        for g in opt.param_groups:
+                            if any(p is f for p in g['params'] for f in frozen):
+                                g['lr'] = 0.0
+                    for f in frozen:
+                        f.requires_grad_(False)
 
                 
             self.tf_convergence = time.time()
