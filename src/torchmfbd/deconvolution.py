@@ -1490,9 +1490,15 @@ class Deconvolution(object):
 
             s_u, s2, K, v0, p = self.get_su_s2(obj=i, sigma=sigma, pars_s0=pars_s0, pars_s2=pars_s2, frames_mean=frames_mean)
             
-            # Per-frame noise weighting: γ_kj = mean(σ²) / σ² 
-            # We use dimensionless weights to maintain consistency with s2/s_u
-            s2_local = torch.mean(sigma[i]**2, dim=1)
+            # Per-frame noise weights γ_kj = s2 / σ_kj², dimensionless and referred to the variance s2 that enters
+            # s2/s_u and the filters. The joint s2 is one variance for the whole batch, so the weights are referred
+            # to it: each frame then counts as 1/σ² and each sequence or time step keeps its own noise, whatever
+            # the other sequences of the batch are. The marginal s2 is fitted per sequence, so there the weights
+            # stay relative to each sequence's mean σ².
+            if self.loss_type == 'marginal':
+                s2_local = torch.mean(sigma[i]**2, dim=1)
+            else:
+                s2_local = s2 * torch.ones_like(sigma[i][:, 0])
             gamma = s2_local[:, None, None, None] / (sigma[i][:, :, None, None] ** 2 + 1e-10)
             Sconj_S = torch.sum(gamma * torch.conj(otf[i]) * otf[i], dim=1)
             Sconj_I = torch.sum(gamma * torch.conj(otf[i]) * images_ft[i], dim=1)

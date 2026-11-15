@@ -124,3 +124,42 @@ def test_prior_frames_scale():
         s_u, _, _, _, _ = dec.get_su_s2(obj=0, sigma=[0.01 * torch.ones(1, n_frames)])
         value = float(s_u.flatten()[1])
         assert abs(value - s_u_joint * 0.25 * expected) < 1e-6 * s_u_joint, f'{n_frames} frames: s_u = {value}, expected {s_u_joint * 0.25 * expected}'
+
+def test_object_independent_of_batch_noise():
+
+    # A sequence's object must not depend on the noise of the other sequences deconvolved in the same batch:
+    # sequence A (sigma 0.01) alone and together with a noisy sequence B (sigma 0.1), true OTFs (BUG-170)
+    config_path = Path(__file__).parent / 'joint.yaml'
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    config['optimization']['gpu'] = -1
+    config['images']['remove_fixed_pattern'] = False
+
+    gen = torch.Generator().manual_seed(3)
+    n_frames = 6
+    for image_filter in ('scharmer', 'garrote', 'tophat'):
+        dec = torchmfbd.Deconvolution(config)
+        dec.n_o = 1
+        dec.n_t = 1
+        dec.init_frame_diversity = [[0]]
+        dec.image_filter = [image_filter]
+        dec.loss_filter = 'wiener'
+        dec._define_basis()
+        dec.compute_diffraction_masks()
+        npix = dec.npix
+
+        obj = 1.0 + 0.1 * torch.randn(2, npix, npix, generator=gen)
+        modes = 0.4 * torch.randn(2, n_frames, dec.n_modes, generator=gen) / torch.sqrt(torch.arange(dec.n_modes) + 1.0)
+        modes[:, :, 0:2] = 0.0
+        with torch.no_grad():
+            _, otf = dec.compute_psfs(modes, [torch.zeros(2, n_frames)])
+        sigma = torch.tensor([[0.01] * n_frames, [0.1] * n_frames])
+        noise = torch.randn(2, n_frames, npix, npix, generator=gen) * sigma[:, :, None, None]
+        frames_ft = npix * torch.fft.fft2(obj, norm='ortho')[:, None] * otf[0] + torch.fft.fft2(noise, norm='ortho')
+
+        with torch.no_grad():
+            _, _, both = dec.compute_object([frames_ft], [otf[0]], [sigma], None)
+            _, _, alone = dec.compute_object([frames_ft[0:1]], [otf[0][0:1]], [sigma[0:1]], None)
+
+        diff = float(torch.max(torch.abs(both[0][0] - alone[0][0])) / torch.std(alone[0][0]))
+        assert diff < 1e-4, f'{image_filter}: the object of sequence A changes by {diff:.3e} std when a noisy sequence shares its batch'
