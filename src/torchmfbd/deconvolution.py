@@ -1144,10 +1144,16 @@ class Deconvolution(object):
                 
         nb, nx, ny = filt.shape
 
+        # Zero frequency (the centre after the shift) carries the object's mean, which every frame gives; it is
+        # always kept, whatever H says there once the apodization has removed the mean
+        filt[:, nx//2, ny//2] = 1.0
+
         mask = np.zeros_like(filt).astype('float32')
 
+        # The region above the threshold connected to zero frequency. (A flood of 1 - filt with tolerance 0.9
+        # around the seed's own value also took the zeroed pixels whenever filt(0) < 0.9.)
         for ib in range(nb):                
-            mask[ib, :, :] = flood(1.0 - filt[ib, :, :], (nx//2, ny//2), tolerance=0.9)
+            mask[ib, :, :] = flood((filt[ib, :, :] >= 0.2).astype(np.uint8), (nx//2, ny//2), tolerance=0)
             mask[ib, :, :] = np.fft.fftshift(mask[ib, :, :])
         
         return torch.tensor(mask.astype('float32')).to(Sconj_S.device)
@@ -1206,6 +1212,10 @@ class Deconvolution(object):
         H = p[4]
 
         gain = torch.nan_to_num(torch.clamp(1.0 - H * s2, min=0.0, max=1.0), nan=0.0)
+
+        # Zero frequency carries the object's mean, which every frame gives: always kept, and the
+        # reconstruction grows from it
+        gain[:, 0, 0] = 1.0
 
         return self.reconstruct_from_zero_frequency(gain)
 
