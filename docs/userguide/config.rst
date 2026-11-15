@@ -89,7 +89,7 @@ starting from 1.
 * ``wavelength`` : wavelength of the object in angstroms
 * ``image_filter`` : Fourier filter to be used for the image. Options are ``tophat`` (a simple tophat filter to avoid frequencies above the cutoff), ``scharmer`` (the filter from Lofdahl & Scharmer 1994) or ``garrote`` (the gain of the Lofdahl & Scharmer filter used as a continuous weight, with the threshold dropped and the flood fill replaced by a grayscale reconstruction from zero frequency, so that the object changes continuously with the data).
 * ``cutoff`` : cutoff frequency. The first element indicates the cutoff frequency below which the filter is 1. The second element marks the frequency above which the filter is 0. In between, a smooth transition is built. All are given in units of the diffraction limit.
-* ``s_u_joint`` : Estimation of the power spectrum of the object. This is relevant only if the ``joint`` loss is used.
+* ``s_u_joint`` : Estimation of the power spectrum of the object, for 64-pixel patches; it is scaled with the square of ``n_pixel`` internally, so the same value means the same regularization at every patch size. This is relevant only if the ``joint`` loss is used.
 
 optimization
 ^^^^^^^^^^^^
@@ -113,6 +113,9 @@ Different regularizations can be used simultaneously. Current options are ``smoo
 * ``smooth1`` : iuwt regularization to be used. The parameters are:
     * ``variable`` : variable to be regularized. Options are ``object`` (which regularizes the object) or ``modes`` (which regularizes the modes)
     * ``lambda`` : regularization parameter    
+
+* ``time`` : temporal regularization of the object, used with ``filter_loss: wiener_time`` or ``wiener_time_contrast`` on 5-D data (sequences, time steps, frames). The parameter is:
+    * ``lambda`` : weight of the squared difference between consecutive time steps, for 64-pixel patches and 12 frames per time step; it is scaled internally so that the same value means the same smoothing for any patch size and number of frames
 
 psf
 ^^^

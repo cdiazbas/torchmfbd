@@ -11,6 +11,7 @@ object1:
     wavelength: 5250.0
     image_filter: tophat
     cutoff: 0.75, 0.75
+    s_u_joint: 0.452
 
 optimization:
     gpu : 0

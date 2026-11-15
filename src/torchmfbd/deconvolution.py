@@ -319,7 +319,10 @@ class Deconvolution(object):
         for i in range(self.n_o):
             self.cutoff[i] = self.config[f'object{i+1}']['cutoff']
             self.image_filter[i] = self.config[f'object{i+1}']['image_filter']
-            self.s_u[i] = self.config[f'object{i+1}']['s_u_joint']
+            # s_u_joint is the object power spectrum level for 64-px patches. The unnormalised DFT of an object
+            # has power proportional to npix^2 (and the ortho OTF(0) is 1/npix), so the level used here scales
+            # with npix^2, and a configured value means the same at every patch size
+            self.s_u[i] = self.config[f'object{i+1}']['s_u_joint'] * (self.npix / 64.0)**2
             w = self.config[f'object{i+1}']['wavelength']
             if w not in unique_wavelengths:
                 unique_wavelengths.append(w)
@@ -1510,6 +1513,11 @@ class Deconvolution(object):
                 images_tmp = rearrange(w * images_ft[i], '(s t) f w h -> s t f w h', t=self.n_t)
                 images_raw = rearrange(images_ft[i], '(s t) f w h -> s t f w h', t=self.n_t)
                 n_seq = images_tmp.shape[0]                    
+
+                # lambda_t competes with sum_j |S_j|^2, which scales as n_frames / npix^2: the configured value is
+                # the weight for 64-px patches and 12 frames, and means the same for any patch size and frame count
+                lambda_t = self.time_regularization * (64.0 / self.npix)**2 * (images_tmp.shape[2] / 12.0)
+
                 out = []
                 for j in range(n_seq):
                     if self.loss_filter == 'wiener_time_contrast':
@@ -1522,7 +1530,7 @@ class Deconvolution(object):
                     else:
                         contrast = None
                     
-                    tmp = self.solve_object_time_evolution(otf_tmp[j, ...], images_tmp[j, ...], Reg_Space, lambda_s, self.time_regularization, contrast=contrast)
+                    tmp = self.solve_object_time_evolution(otf_tmp[j, ...], images_tmp[j, ...], Reg_Space, lambda_s, lambda_t, contrast=contrast)
                     out.append(tmp[None, ...])
                 out = torch.cat(out, dim=0)
                 time_ft = rearrange(out, 's t w h -> (s t) w h')

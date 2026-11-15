@@ -11,13 +11,13 @@ object1:
     wavelength : 8542.0
     image_filter: scharmer
     cutoff : [0.95, 0.98]
-    s_u_joint: 250.0
+    s_u_joint: 120.98
 
 object2:
     wavelength : 8542.0
     image_filter: scharmer
     cutoff : [0.95, 0.98]
-    s_u_joint: 250.0
+    s_u_joint: 120.98
     
 optimization:
     gpu : 0
@@ -35,7 +35,7 @@ regularization:
         lambda : 0.00
         nbands : 5
      time:        
-        lambda : 3e-4
+        lambda : 6.2e-4
 
 psf:
     model : kl

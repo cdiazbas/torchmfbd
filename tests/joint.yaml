@@ -11,13 +11,13 @@ object1:
     wavelength : 8542.0
     image_filter: scharmer
     cutoff : [0.85, 0.90]
-    s_u_joint: 100.0
+    s_u_joint: 400.0
 
 object2:
     wavelength : 8542.0
     image_filter: scharmer
     cutoff : [0.85, 0.90]
-    s_u_joint: 100.0
+    s_u_joint: 400.0
     
 optimization:
     gpu : 0
