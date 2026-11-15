@@ -588,9 +588,13 @@ class Deconvolution(object):
             raise ValueError(f"Unknown regularization '{k}': the key must start with smooth, iuwt or time")
 
         self.time_regularization = 0.0
+        self.time_mask_window = 3
         for k, v in self.config['regularization'].items():
             if kind(k) == 'time':
                 self.time_regularization = float(v['lambda'])
+                self.time_mask_window = int(v.get('mask_window', 3))
+                if self.time_mask_window < 1 or self.time_mask_window % 2 == 0:
+                    raise ValueError(f"regularization.{k}.mask_window must be a positive odd number of time steps, got {self.time_mask_window}")
 
         for k, v in self.config['regularization'].items():            
             if v['lambda'] != 0.0:
@@ -1337,6 +1341,33 @@ class Deconvolution(object):
         
         return s_u, s2, K, v0, p
             
+    def time_window_sums(self, *sums):
+        """
+        Sum per-step quantities over a window of neighbouring time steps of the same sequence.
+
+        Parameters
+        ----------
+        *sums : torch.Tensor
+            Tensors of shape (n_seq * n_t, nx, ny) in the '(s t)' layout of compute_object, such as
+            sum_j gamma |S_j|^2 and sum_j gamma S_j^* D_j.
+
+        Returns
+        -------
+        list of torch.Tensor
+            The same tensors, each step replaced by the sum over steps t - w//2 ... t + w//2 that exist, with w the
+            `mask_window` of the `time` regularization (3 by default; 1 gives each step alone).
+        """
+        half = int(getattr(self, 'time_mask_window', 3)) // 2
+        out = []
+        for x in sums:
+            y = rearrange(x, '(s t) w h -> s t w h', t=self.n_t)
+            acc = y.clone()
+            for k in range(1, min(half, self.n_t - 1) + 1):
+                acc[:, k:] += y[:, :-k]
+                acc[:, :-k] += y[:, k:]
+            out.append(rearrange(acc, 's t w h -> (s t) w h'))
+        return out
+
     def solve_object_time_evolution(self, S, D, Reg_Space, lambda_s, lambda_t, contrast=None):
         """
         Solves the batched tridiagonal systems for the multi-burst regularized object using PyTorch.
@@ -1559,10 +1590,16 @@ class Deconvolution(object):
 
             # Lofdahl & Scharmer (1994) mask, or its continuous gain
             if self.image_filter[i] in ('scharmer', 'garrote'):
+                # In the time path the object of a step also carries what the time term brings from its neighbours,
+                # so its mask is computed from the sums over the neighbouring steps: from the step alone, a noisy
+                # step keeps only a few frequencies and loses what its neighbours provide
+                SS_mask, SI_mask = Sconj_S, Sconj_I
+                if time_coupled:
+                    SS_mask, SI_mask = self.time_window_sums(Sconj_S, Sconj_I)
                 if self.image_filter[i] == 'scharmer':
-                    mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, s2_filt.detach()) * self.mask_diffraction_th[i][None, :, :]
+                    mask = self.lofdahl_scharmer_filter(SS_mask, SI_mask, s2_filt.detach()) * self.mask_diffraction_th[i][None, :, :]
                 else:
-                    mask = self.garrote_filter(Sconj_S, Sconj_I, s2_filt) * self.mask_diffraction_th[i][None, :, :]
+                    mask = self.garrote_filter(SS_mask, SI_mask, s2_filt) * self.mask_diffraction_th[i][None, :, :]
                 
                 if time_coupled:
                     out_ft[i] = time_ft

@@ -216,3 +216,57 @@ def test_psf_fit_independent_of_batch_noise(make_synthetic_frames):
         out.append(dec.obj[0][0:2].detach().double())
     diff = float(torch.max(torch.abs(out[1] - out[0])) / torch.std(out[0]))
     assert diff < 1e-3, f'the objects of the quiet sequences change by {diff:.3e} std when the other sequences of the batch are noisy'
+
+def test_time_mask_from_neighbouring_steps():
+
+    # In the time path the L&S mask of a time step is computed from that step and its neighbours, so a step with
+    # ten times the noise of the others keeps what the time term brings from them (BUG-171). True OTFs: only the
+    # object solver is tested
+    config_path = Path(__file__).parent / 'joint.yaml'
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    config['optimization']['gpu'] = -1
+    config['images']['remove_fixed_pattern'] = False
+
+    gen = torch.Generator().manual_seed(4)
+    n_seq, n_t, n_frames = 2, 6, 6
+    dec = torchmfbd.Deconvolution(config)
+    dec.n_o = 1
+    dec.n_t = n_t
+    dec.init_frame_diversity = [[0]]
+    dec.image_filter = ['scharmer']
+    dec.loss_filter = 'wiener_time'
+    dec.time_regularization = 5e-4
+    dec._define_basis()
+    dec.compute_diffraction_masks()
+    npix = dec.npix
+
+    # An object that changes slowly from one time step to the next
+    k = torch.fft.fftfreq(npix)
+    kx, ky = torch.meshgrid(k, k, indexing='ij')
+    amp = 1.0 / (1.0 + (torch.sqrt(kx**2 + ky**2) / 0.08)**2)
+    def field():
+        f = torch.fft.ifft2(torch.fft.fft2(torch.randn(n_seq, npix, npix, generator=gen)) * amp).real
+        return 0.1 * f / torch.std(f, dim=(-1, -2), keepdim=True)
+    a, b = field(), field()
+    th = 0.1 * torch.arange(n_t, dtype=torch.float32)[None, :, None, None]
+    obj = (1.0 + torch.cos(th) * a[:, None] + torch.sin(th) * b[:, None]).reshape(n_seq * n_t, npix, npix)
+
+    modes = torch.zeros(n_seq * n_t, n_frames, dec.n_modes)
+    modes[..., 2:20] = 0.4 * torch.randn(n_seq * n_t, n_frames, 18, generator=gen)
+    with torch.no_grad():
+        _, otf = dec.compute_psfs(modes, [torch.zeros(n_seq * n_t, n_frames)])
+    sigma = torch.full((n_seq, n_t, n_frames), 0.01)
+    sigma[:, 3] = 0.1
+    sigma = sigma.reshape(n_seq * n_t, n_frames)
+    noise = torch.randn(n_seq * n_t, n_frames, npix, npix, generator=gen) * sigma[:, :, None, None]
+    frames_ft = npix * torch.fft.fft2(obj, norm='ortho')[:, None] * otf[0] + torch.fft.fft2(noise, norm='ortho')
+
+    with torch.no_grad():
+        _, _, out = dec.compute_object([frames_ft.to(torch.complex64)], [otf[0].to(torch.complex64)], [sigma], None)
+
+    ref = torch.fft.ifft2(torch.fft.fft2(obj) * dec.mask_diffraction_th[0]).real
+    err = torch.sqrt(torch.mean((out[0].double() - ref.double())**2, dim=(-1, -2))) / torch.std(ref.double(), dim=(-1, -2))
+    err = err.reshape(n_seq, n_t).mean(dim=0)
+    others = torch.cat([err[:3], err[4:]]).mean()
+    assert err[3] < 1.5 * others, f'noisy step: error {float(err[3]):.3f} against {float(others):.3f} for the other steps'

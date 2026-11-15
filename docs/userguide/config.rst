@@ -114,8 +114,9 @@ Different regularizations can be used simultaneously. Current options are ``smoo
     * ``variable`` : variable to be regularized. Options are ``object`` (which regularizes the object) or ``modes`` (which regularizes the modes)
     * ``lambda`` : regularization parameter    
 
-* ``time`` : temporal regularization of the object, used with ``filter_loss: wiener_time`` or ``wiener_time_contrast`` on 5-D data (sequences, time steps, frames). The parameter is:
+* ``time`` : temporal regularization of the object, used with ``filter_loss: wiener_time`` or ``wiener_time_contrast`` on 5-D data (sequences, time steps, frames). The parameters are:
     * ``lambda`` : weight of the squared difference between consecutive time steps, for 64-pixel patches and 12 frames per time step; it is scaled internally so that the same value means the same smoothing for any patch size and number of frames
+    * ``mask_window`` : number of consecutive time steps (odd, default 3) from which the ``scharmer`` mask or the ``garrote`` gain of each step is computed. With 1 each step uses only its own frames, and a much noisier step then loses what the time term brings from its neighbours
 
 psf
 ^^^
