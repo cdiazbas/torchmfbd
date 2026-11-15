@@ -68,8 +68,8 @@ if __name__ == '__main__':
     fig, ax = pl.subplots(nrows=2, ncols=3, figsize=(15, 10), sharex=True, sharey=True)
     for i in range(2):
         ax[i, 0].imshow(frames[0, i, 0, 0:, 0:], cmap='gray', interpolation='nearest')
-        ax[i, 1].imshow(obj[i][0, 0, 0:, 0:], cmap='gray', interpolation='nearest')
-        ax[i, 2].imshow(obj_kl[i][0, 0, 0:, 0:], cmap='gray', interpolation='nearest')
+        ax[i, 1].imshow(obj[i][0, 0:, 0:], cmap='gray', interpolation='nearest')
+        ax[i, 2].imshow(obj_kl[i][0, 0:, 0:], cmap='gray', interpolation='nearest')
 
     # decSI.update_object(cutoffs=[[0.3, 0.35], [0.3, 0.35]])
 

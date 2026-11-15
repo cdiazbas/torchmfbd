@@ -89,9 +89,14 @@ class Patchify4D(object):
     def unpatchify(self, x, apodization=0, weight_type=None, weight_params=None):
         """
         Reconstructs the original image from patches. Works seamlessly if x has
-        the original n_frames or if n_frames=1.
+        the original n_frames or if n_frames=1. Patches without a frame axis (one image per
+        patch, such as a deconvolved object) give a mosaic without a frame axis.
         """
         xndim = x.ndim
+
+        # One image per patch, with no frame axis: the output has none either
+        no_frame_axis = (self.flatten_sequences and xndim == 3) or \
+                        (not self.flatten_sequences and xndim == len(self.batch_shape) + 3)
 
         # Nested layout with the frame axis dropped, (*, L, K, K): restore it
         if not self.flatten_sequences and xndim == len(self.batch_shape) + 3:
@@ -170,6 +175,9 @@ class Patchify4D(object):
         
         # 4. View final output respecting the new dynamic current_frames 
         final = final.view(*self.batch_shape, current_frames, new_size_x, new_size_y)
+
+        if no_frame_axis:
+            final = final.squeeze(-3)
                 
         return final
 # class Patchify4D(object):

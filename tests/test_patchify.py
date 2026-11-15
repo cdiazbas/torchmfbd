@@ -90,3 +90,24 @@ def test_patchify_stride_too_large():
         pass
     else:
         raise AssertionError('No ValueError for a stride larger than patch_size - 2*apodization')
+
+def test_patchify_object():
+
+    # One image per patch (a deconvolved object, (L, K, K)): the mosaic has no frame axis, as the examples plot it
+    gen = torch.Generator().manual_seed(4)
+    frames = torch.randn(1, 3, 80, 80, generator=gen)
+
+    p = torchmfbd.Patchify4D()
+
+    for flatten in [True, False]:
+        patches = p.patchify(frames, patch_size=20, stride_size=10, flatten_sequences=flatten)
+        obj = patches[..., 0, :, :]
+        out = p.unpatchify(obj, apodization=0)
+
+        assert out.shape == (1, 80, 80), f'Expected (1, 80, 80), got {out.shape} (flatten_sequences={flatten})'
+        assert torch.allclose(out, frames[:, 0], atol=1e-6), f'Round trip differs by {torch.max(torch.abs(out - frames[:, 0])).item()} (flatten_sequences={flatten})'
+
+    # With the frame axis kept, (L, 1, K, K), the frame axis is kept in the mosaic
+    patches = p.patchify(frames, patch_size=20, stride_size=10, flatten_sequences=True)
+    out = p.unpatchify(patches[:, 0:1], apodization=0)
+    assert out.shape == (1, 1, 80, 80), f'Expected (1, 1, 80, 80), got {out.shape}'
