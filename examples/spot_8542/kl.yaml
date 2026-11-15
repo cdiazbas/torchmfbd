@@ -28,10 +28,11 @@ optimization:
     lr_modes : 0.08
     lr_prior : 0.08
     loss_type: marginal
-    # The PSD parameters stop being fitted once more than 5 modes are active. On synthetic bursts with a known truth
-    # (marginal, LBFGS 10) this gives a better object than fitting them throughout, with PSFs that come out too
-    # narrow; a very large value fits them throughout and gives better PSFs and a worse object.
-    stop_psd_optimization: 5
+    # The PSD parameters stop being fitted once more than 20 modes are active: with the linear annealing below and
+    # LBFGS 10 (spot_8542_kl_patches.py), after 5 of the 10 steps. The longer they are fitted, the broader the
+    # fitted PSFs. On synthetic bursts with a known truth this gives a better object and better PSFs than fitting
+    # them throughout; 5 gives a slightly better object with PSFs that come out too narrow.
+    stop_psd_optimization: 20
     show_object_info: False
 
 regularization:
