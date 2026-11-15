@@ -188,3 +188,31 @@ def test_jitter_with_threaded_fft(make_synthetic_frames):
             assert torch.all(torch.isfinite(dec.obj[0])), f'jitter {jitter}: non-finite object'
     finally:
         torch.set_num_threads(n_threads)
+
+def test_psf_fit_independent_of_batch_noise(make_synthetic_frames):
+
+    # The joint loss must give each sequence its own noise variance: the PSFs and objects fitted to two quiet
+    # sequences may not change when the two other sequences of the batch are noisy (BUG-170, loss)
+    config_path = Path(__file__).parent / 'joint.yaml'
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    config['optimization']['gpu'] = -1
+    config['images']['remove_fixed_pattern'] = False
+
+    obj, frames = make_synthetic_frames(config_path, 4, 5, 0.01, seed=1)
+    gen = torch.Generator().manual_seed(7)
+    extra = torch.randn(frames.shape, generator=gen)
+    out = []
+    for noisy in (False, True):
+        sigma = 0.01 * torch.ones(4, 5)
+        fr = frames.clone()
+        if noisy:
+            sigma[2:] = 0.1
+            fr[2:] = fr[2:] + 0.0995 * extra[2:]
+        torch.manual_seed(0)
+        dec = torchmfbd.Deconvolution(config)
+        dec.add_frames(fr, sigma=sigma, id_object=0, id_diversity=0, diversity=0.0)
+        dec.deconvolve(infer_object=False, optimizer='adam', simultaneous_sequences=4, n_iterations=10)
+        out.append(dec.obj[0][0:2].detach().double())
+    diff = float(torch.max(torch.abs(out[1] - out[0])) / torch.std(out[0]))
+    assert diff < 1e-3, f'the objects of the quiet sequences change by {diff:.3e} std when the other sequences of the batch are noisy'

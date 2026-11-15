@@ -1686,7 +1686,13 @@ class Deconvolution(object):
                 frames_mean = torch.mean(frames_ft[i][:, :, 0, 0], dim=1).real
 
                 s_u, s2, K, v0, p = self.get_su_s2(obj=i, sigma=sigma, pars_s0=pars_s0, pars_s2=pars_s2, frames_mean=frames_mean)
-                                
+
+                # One noise variance per sequence, as in the lowpass loss: get_su_s2 gives the joint loss one
+                # variance for the whole batch, which made the PSFs fitted to a sequence depend on the noise of
+                # the other sequences of its batch
+                if self.loss_type != 'marginal':
+                    s2 = torch.mean(sigma[i]**2, dim=1)
+
                 # The value of s_u in the case of the joint estimation should be
                 # selected by hand to give good results
                 # sigma**2/s_u should be the ration between noise and estimated object power spectrum
