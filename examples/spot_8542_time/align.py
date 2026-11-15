@@ -19,7 +19,10 @@ if __name__ == '__main__':
 
     obs_file = 'sequence_8542_npix256_aligned.h5'
     
-    root = '/net/diablos/scratch/sesteban/reduc/reduc_andres/spot_20200727_083509_8542'
+    # Folder of the SST reduction: first argument, or the SST_REDUC_ROOT environment variable
+    root = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('SST_REDUC_ROOT')
+    if root is None:
+        sys.exit('usage: python align.py <reduction folder of spot_20200727_083509_8542> (or set SST_REDUC_ROOT)')
     label = '20200727_083509_8542_nwav_al'
     print(f'Reading wavelength point {lam}...')
     for i in range(49):
@@ -43,8 +46,15 @@ if __name__ == '__main__':
 
     ns, nf, nx, ny = wb.shape
 
-    wb = torch.tensor(wb, dtype=torch.float32).to('cuda')
-    nb = torch.tensor(nb, dtype=torch.float32).to('cuda')
+    if torch.cuda.is_available():
+        device = 'cuda'
+    elif torch.backends.mps.is_available():
+        device = 'mps'
+    else:
+        device = 'cpu'
+
+    wb = torch.tensor(wb, dtype=torch.float32).to(device)
+    nb = torch.tensor(nb, dtype=torch.float32).to(device)
     
     # Align the frames inside each sequence
     warped, tt = torchmfbd.destretch(wb[:, None, :, :, :],

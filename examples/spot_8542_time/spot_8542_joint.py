@@ -81,7 +81,10 @@ if __name__ == '__main__':
     # fig, ax = pl.subplots(ncols=4, nrows=n_t, figsize=(16, 4*n_t), sharex=True, sharey=True)
 
     if regularize:
-        fout = h5py.File('reconstruction_regularized_contrast_3e-4.h5', 'w')
+        # Named after the time regularization of the configuration, as movie.py reads it
+        lambda_t = decSI.config['regularization']['time']['lambda']
+        contrast = 'contrast_' if decSI.config['optimization']['filter_loss'] == 'wiener_time_contrast' else ''
+        fout = h5py.File(f'reconstruction_regularized_{contrast}{lambda_t:g}.h5', 'w')
     else:
         fout = h5py.File('reconstruction_original.h5', 'w')
     for io in range(2):
