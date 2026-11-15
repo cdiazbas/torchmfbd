@@ -1262,6 +1262,21 @@ class Deconvolution(object):
 
         return torch.fft.ifftshift(r[:, 0], dim=(-2, -1))
 
+    def frames_prior_scale(self, obj):
+        """
+        Factor applied to the joint object prior level s_u for the number of frames of the object.
+
+        The data term of the joint loss grows with the number of frames N while the object prior does not, so with
+        many frames the fit drifts along the degenerate direction of MFBD (all PSFs broadened by a common kernel, the
+        object sharpened by its inverse). Above 12 frames the prior keeps its weight relative to the data:
+        s_u = s_u_joint * 12 / N. At 12 frames or fewer the factor is 1: there the stronger relative prior lowers the
+        rms object error but not the PSF error, and the choice is left unchanged.
+        """
+        n = getattr(self, 'n_frames_per_object', None)
+        if n is None or n[obj] <= 12:
+            return 1.0
+        return 12.0 / n[obj]
+
     def get_su_s2(self, obj, sigma, pars_s0=None, pars_s2=None, frames_mean=None):
         """
         Transforms the parameters of the s0 function to ensure they are in the correct range.
@@ -1313,7 +1328,7 @@ class Deconvolution(object):
                 s2 = torch.exp(pars_s0[:, obj, 3])
         else:
             K, v0, p = None, None, None
-            s_u = self.s_u[obj] * torch.ones_like(self.rho[obj]).to(self.device)
+            s_u = self.s_u[obj] * self.frames_prior_scale(obj) * torch.ones_like(self.rho[obj]).to(self.device)
             if hasattr(sigma[obj], 'dim') and sigma[obj].dim() == 3:
                 s2 = torch.mean(sigma[obj]**2, dim=1)
             else:
@@ -2059,6 +2074,7 @@ class Deconvolution(object):
         for i in range(self.n_bursts):
             n_frames_per_object[self.ind_object[i]] += n_f
             n_diversity_per_object[self.ind_object[i]] += 1
+        self.n_frames_per_object = n_frames_per_object
         
         for i in range(self.n_o):
             frames[i] = torch.zeros(n_seq, n_frames_per_object[i], n_x, n_y)
@@ -2384,7 +2400,7 @@ class Deconvolution(object):
             self.logger.info(f"     - Size of frames {self.n_x} x {self.n_y}...")
             self.logger.info(f"     - Filter: {self.image_filter[i]} - cutoff: {self.cutoff[i]}...")
             if self.loss_type == "joint":
-                self.logger.info(f"     - s_u: {self.s_u[i]}")
+                self.logger.info(f"     - s_u: {self.s_u[i] * self.frames_prior_scale(i)} (s_u_joint for 64 px and at most 12 frames: {self.config[f'object{i+1}']['s_u_joint']})")
             if self.loss_type == "marginal":                
                 self.logger.info(f"     - Stopping optimization after {self.stop_psd} modes")
                                 

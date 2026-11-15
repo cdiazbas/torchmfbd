@@ -102,3 +102,25 @@ def test_time_5d(make_synthetic_frames):
     assert out.dtype == torch.float32, f'Expected float32, got {out.dtype}'
     assert torch.all(torch.isfinite(out)), 'Non-finite object'
     assert torch.allclose(out.mean(dim=(-1, -2)), frames.mean(dim=(-1, -2, -3))[None, :], rtol=0.05), f'Object mean {out.mean(dim=(-1, -2)).tolist()}, frames mean {frames.mean(dim=(-1, -2, -3)).tolist()}'
+
+def test_prior_frames_scale():
+
+    # The joint object prior keeps its weight relative to the data above 12 frames (s_u_joint * 12 / N) and is
+    # unchanged at 12 frames or fewer; s_u_joint is stated for 64-px patches (here 32 px: factor (32/64)^2)
+    config_path = Path(__file__).parent / 'joint.yaml'
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    config['optimization']['gpu'] = -1
+    config['images']['remove_fixed_pattern'] = False
+
+    s_u_joint = config['object1']['s_u_joint']
+    for n_frames, expected in ((5, 1.0), (12, 1.0), (24, 0.5), (48, 0.25)):
+        dec = torchmfbd.Deconvolution(config)
+        dec.add_frames(1.0 + 0.01 * torch.rand(1, n_frames, 32, 32), sigma=0.01, id_object=0, id_diversity=0, diversity=0.0)
+        dec.n_o = 1
+        dec.init_frame_diversity = [[0]]
+        dec._define_basis()
+        dec.combine_frames()
+        s_u, _, _, _, _ = dec.get_su_s2(obj=0, sigma=[0.01 * torch.ones(1, n_frames)])
+        value = float(s_u.flatten()[1])
+        assert abs(value - s_u_joint * 0.25 * expected) < 1e-6 * s_u_joint, f'{n_frames} frames: s_u = {value}, expected {s_u_joint * 0.25 * expected}'

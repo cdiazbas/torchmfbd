@@ -89,7 +89,7 @@ starting from 1.
 * ``wavelength`` : wavelength of the object in angstroms
 * ``image_filter`` : Fourier filter to be used for the image. Options are ``tophat`` (a simple tophat filter to avoid frequencies above the cutoff), ``scharmer`` (the filter from Lofdahl & Scharmer 1994) or ``garrote`` (the gain of the Lofdahl & Scharmer filter used as a continuous weight, with the threshold dropped and the flood fill replaced by a grayscale reconstruction from zero frequency, so that the object changes continuously with the data).
 * ``cutoff`` : cutoff frequency. The first element indicates the cutoff frequency below which the filter is 1. The second element marks the frequency above which the filter is 0. In between, a smooth transition is built. All are given in units of the diffraction limit.
-* ``s_u_joint`` : Estimation of the power spectrum of the object, for 64-pixel patches; it is scaled with the square of ``n_pixel`` internally, so the same value means the same regularization at every patch size. This is relevant only if the ``joint`` loss is used.
+* ``s_u_joint`` : Estimation of the power spectrum of the object, for 64-pixel patches; it is scaled with the square of ``n_pixel`` internally, so the same value means the same regularization at every patch size. With more than 12 frames per object it is also multiplied by 12/N, so that the prior keeps its weight relative to the data term, which grows with the number of frames N. This is relevant only if the ``joint`` loss is used.
 
 optimization
 ^^^^^^^^^^^^
