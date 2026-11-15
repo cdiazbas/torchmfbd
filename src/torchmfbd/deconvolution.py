@@ -1115,6 +1115,12 @@ class Deconvolution(object):
         # division, which underflows to 0 (inf/NaN in H) on devices that flush subnormals, such as MPS
         den = (torch.conj(Sconj_I) * Sconj_I).real
         H = Sconj_S.real / den
+
+        # The sampled pupil's OTF ends before the nominal cutoff: where sum|S|^2 is at roundoff level, H is a
+        # ratio of roundoff numbers that the 3 x 3 median would carry into the band, so those frequencies are
+        # given no signal
+        support = Sconj_S.real > 1e-10 * Sconj_S.real[:, 0:1, 0:1]
+        H = torch.where(support, H, torch.full_like(H, float('inf')))
         H = torch.fft.fftshift(H, dim=(-2, -1)).detach().cpu().numpy()
         
         # noise = 1.35 / np.median(H[:, :, 0:10, 0:10], axis=(2,3))
