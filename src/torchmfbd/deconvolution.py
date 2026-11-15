@@ -478,13 +478,14 @@ class Deconvolution(object):
 # Get a Traversable path object to the file
                 filename = importlib.resources.files("torchmfbd").joinpath("vae", "nonlinear_matryoshka_z_200_beta_0.1.pth")
 
-                # The checkpoint (46 MB) is read once per instance, not per wavelength and per deconvolve()
+                # The checkpoint holds the decoder weights and the PSF statistics only (tensors, ints and a
+                # list), so it loads with weights_only=True; it is read once per instance
                 if getattr(self, '_vae_checkpoint', None) is None:
-                    self._vae_checkpoint = torch.load(filename, map_location=lambda storage, loc: storage, weights_only=False)
+                    self._vae_checkpoint = torch.load(filename, map_location=lambda storage, loc: storage, weights_only=True)
                 checkpoint = self._vae_checkpoint
 
-                self.x_vae_mean = torch.tensor(checkpoint['x_mean'].astype('float32')).to(self.device)
-                self.x_vae_std = torch.tensor(checkpoint['x_std'].astype('float32')).to(self.device)
+                self.x_vae_mean = torch.as_tensor(checkpoint['x_mean'], dtype=torch.float32).to(self.device)
+                self.x_vae_std = torch.as_tensor(checkpoint['x_std'], dtype=torch.float32).to(self.device)
                 latent_dim = checkpoint['latent_dim']
                 n_pixel = checkpoint['n_pixel']
                 nested_dims = checkpoint['nested_dims']
@@ -496,7 +497,10 @@ class Deconvolution(object):
                 # Model and Optimizer initialization
                 self.model_vae = ConvVAE2D(in_channels=1, img_size=n_pixel, latent_dim=latent_dim, nested_dims=nested_dims).to(self.device)
 
-                self.model_vae.load_state_dict(checkpoint['state_dict'])
+                # Only the decoder is stored: the encoder is not used to generate PSFs
+                missing, unexpected = self.model_vae.load_state_dict(checkpoint['state_dict'], strict=False)
+                if unexpected or any(k.startswith('decoder') for k in missing):
+                    raise RuntimeError(f"VAE checkpoint does not match the decoder: missing {missing}, unexpected {unexpected}")
                 self.model_vae.eval()
 
                 # The decoder is a fixed prior: no gradients for its 1.5 M weights
