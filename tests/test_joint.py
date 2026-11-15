@@ -163,3 +163,28 @@ def test_object_independent_of_batch_noise():
 
         diff = float(torch.max(torch.abs(both[0][0] - alone[0][0])) / torch.std(alone[0][0]))
         assert diff < 1e-4, f'{image_filter}: the object of sequence A changes by {diff:.3e} std when a noisy sequence shares its batch'
+
+def test_jitter_with_threaded_fft(make_synthetic_frames):
+
+    # The jitter OTF multiplies the OTF returned by the threaded FFT, a custom autograd function: that product
+    # must not be in place (BUG-172). The threaded FFT is used on CPU builds without MKL when the batch has
+    # at least 4 images per thread, so two threads and 2 x 5 frames reach it
+    config_path = Path(__file__).parent / 'joint.yaml'
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    config['optimization']['gpu'] = -1
+    config['images']['remove_fixed_pattern'] = False
+    config['annealing']['type'] = 'none'
+
+    obj, frames = make_synthetic_frames(config_path, 2, 5, 0.005, seed=0)
+    n_threads = torch.get_num_threads()
+    torch.set_num_threads(2)
+    try:
+        for jitter in ('slow', 'fast'):
+            config['psf']['jitter'] = jitter
+            dec = torchmfbd.Deconvolution(config)
+            dec.add_frames(frames, sigma=0.005 * torch.ones(2, 5), id_object=0, id_diversity=0, diversity=0.0)
+            dec.deconvolve(infer_object=False, optimizer='adam', simultaneous_sequences=2, n_iterations=2)
+            assert torch.all(torch.isfinite(dec.obj[0])), f'jitter {jitter}: non-finite object'
+    finally:
+        torch.set_num_threads(n_threads)

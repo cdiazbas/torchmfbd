@@ -936,12 +936,13 @@ class Deconvolution(object):
             # FFT of the PSF
             otf[i] = fft2_ortho(psf_norm[i]) if self.fft_norm == 'ortho' else torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
 
-            # If using jitter, multiply the OTFs
+            # If using jitter, multiply the OTFs. Not in place: on CPU the OTF can come from the threaded FFT,
+            # a custom autograd function whose output autograd does not allow to be modified
             if self.use_jitter == 'fast' and n_active > 20:
-                otf[i] *= jitter_otf
+                otf[i] = otf[i] * jitter_otf
 
             if self.use_jitter == 'slow' and n_active == self.n_modes:
-                otf[i] *= jitter_otf
+                otf[i] = otf[i] * jitter_otf
                 
         return psf_norm, otf
     
