@@ -28,6 +28,9 @@ optimization:
     lr_modes : 0.08
     lr_prior : 0.08
     loss_type: marginal
+    # The PSD parameters stop being fitted once more than 5 modes are active. On synthetic bursts with a known truth
+    # (marginal, LBFGS 10) this gives a better object than fitting them throughout, with PSFs that come out too
+    # narrow; a very large value fits them throughout and gives better PSFs and a worse object.
     stop_psd_optimization: 5
     show_object_info: False
 
