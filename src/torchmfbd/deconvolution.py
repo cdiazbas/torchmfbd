@@ -1050,8 +1050,14 @@ class Deconvolution(object):
             # FFT of the PSF
             otf[i] = fft2_ortho(psf_norm[i]) if self.fft_norm == 'ortho' else torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
 
-            # Apply Fourier-domain shift (tip-tilt substitute for NMF)
-            # shift_x, shift_y are in pixels; shape: (n_seq,)                        
+            # Apply Fourier-domain shift (tip-tilt substitute for NMF); no shift when none is given
+            # shift_x, shift_y are in pixels; shape: (n_seq, n_f)
+            if shift_x is None and shift_y is None:
+                continue
+            if shift_x is None:
+                shift_x = torch.zeros_like(shift_y)
+            if shift_y is None:
+                shift_y = torch.zeros_like(shift_x)
             freq_x = torch.fft.fftfreq(self.npix, device=self.device)  # (W,)
             freq_y = torch.fft.fftfreq(self.npix, device=self.device)  # (H,)
             fy, fx = torch.meshgrid(freq_y, freq_x, indexing='ij')     # (H, W)
