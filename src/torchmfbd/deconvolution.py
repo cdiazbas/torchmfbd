@@ -1810,7 +1810,12 @@ class Deconvolution(object):
                 frames_mean = torch.mean(frames_ft[i][:, :, 0, 0], dim=1).real
 
                 s_u, s2, K, v0, p = self.get_su_s2(obj=i, sigma=sigma, pars_s0=pars_s0, pars_s2=pars_s2, frames_mean=frames_mean)
-                                                
+
+                # One noise variance per sequence and time step, as in the wiener loss: with the variance of the
+                # whole batch a much noisier step weighed as much as a quiet one and spoilt the PSFs fitted to all
+                if self.loss_type != 'marginal':
+                    s2 = torch.mean(sigma[i]**2, dim=1)
+
                 if pars_s2 is not None:
                     s2_term = s2
                 else:

@@ -270,3 +270,56 @@ def test_time_mask_from_neighbouring_steps():
     err = err.reshape(n_seq, n_t).mean(dim=0)
     others = torch.cat([err[:3], err[4:]]).mean()
     assert err[3] < 1.5 * others, f'noisy step: error {float(err[3]):.3f} against {float(others):.3f} for the other steps'
+
+def test_time_fit_robust_to_one_noisy_step():
+
+    # The time-coupled loss must weigh each time step by its own noise: one step with ten times the noise of the
+    # others may not spoil the PSFs, and so the objects, fitted to the quiet steps (BUG-170, time loss). Blind fit;
+    # the quiet steps are compared with a control in which every step is quiet
+    config_path, config = _time_config()
+    config['optimization']['gpu'] = -1
+    config['images']['remove_fixed_pattern'] = False
+    config['regularization']['time']['lambda'] = 1e-3
+
+    n_seq, n_t, n_frames = 2, 6, 6
+    gen = torch.Generator().manual_seed(20)
+    dec0 = torchmfbd.Deconvolution(config)
+    dec0.n_o = 1
+    dec0.init_frame_diversity = [[0]]
+    dec0._define_basis()
+    npix = dec0.npix
+
+    k = torch.fft.fftfreq(npix)
+    kx, ky = torch.meshgrid(k, k, indexing='ij')
+    amp = 1.0 / (1.0 + (torch.sqrt(kx**2 + ky**2) / 0.08)**2)
+    def field():
+        f = torch.fft.ifft2(torch.fft.fft2(torch.randn(n_seq, npix, npix, generator=gen)) * amp).real
+        return 0.1 * f / torch.std(f, dim=(-1, -2), keepdim=True)
+    a, b = field(), field()
+    th = 0.1 * torch.arange(n_t, dtype=torch.float32)[None, :, None, None]
+    obj = 1.0 + torch.cos(th) * a[:, None] + torch.sin(th) * b[:, None]
+    modes = torch.zeros(n_seq * n_t, n_frames, dec0.n_modes)
+    modes[..., 2:20] = 0.4 * torch.randn(n_seq * n_t, n_frames, 18, generator=gen)
+    with torch.no_grad():
+        psf, _ = dec0.compute_psfs(modes, [torch.zeros(n_seq * n_t, n_frames)])
+    psf = psf[0].reshape(n_seq, n_t, n_frames, npix, npix)
+    clean = torch.fft.ifft2(torch.fft.fft2(obj)[:, :, None] * torch.fft.fft2(psf)).real
+    noise = torch.randn(clean.shape, generator=gen)
+    quiet = [t for t in range(n_t) if t != 3]
+
+    err = {}
+    for case in ('control', 'noisy step'):
+        sigma = torch.full((n_seq, n_t, n_frames), 0.01)
+        if case == 'noisy step':
+            sigma[:, 3] = 0.1
+        torch.manual_seed(0)
+        dec = torchmfbd.Deconvolution(config)
+        dec.add_frames(clean + noise * sigma[..., None, None], sigma=sigma, id_object=0, id_diversity=0, diversity=0.0)
+        dec.deconvolve(infer_object=False, optimizer='adam', simultaneous_sequences=n_seq * n_t, n_iterations=40)
+        ref = torch.fft.ifft2(torch.fft.fft2(obj) * dec.mask_diffraction_th[0].cpu()).real.double()
+        o = dec.obj[0].cpu().double().reshape(n_seq, n_t, npix, npix)
+        d = (o - o.mean(dim=(-1, -2), keepdim=True)) - (ref - ref.mean(dim=(-1, -2), keepdim=True))
+        e = torch.sqrt(torch.mean(d**2, dim=(-1, -2))) / torch.std(ref, dim=(-1, -2))
+        err[case] = float(e[:, quiet].mean())
+
+    assert err['noisy step'] < 1.3 * err['control'], f"quiet steps: error {err['noisy step']:.3f} with a noisy step against {err['control']:.3f} without"
