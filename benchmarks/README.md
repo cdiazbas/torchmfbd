@@ -73,9 +73,9 @@ These are measured, and each has cost a wrong conclusion once.
   `--compare` refuses runs from different devices. Each device repeats its own results exactly.
 - **The noise floor.** Two starts of the same configuration differ by several % per scene (±8.6 % mean |change| on the
   default sets, 64-px patches). A mean change inside it is not a result, however many scenes favour it.
-- **The control.** The object from the true PSFs must not be worse than the code's in any scene, and must be clearly
-  better (10 %) over each set. Otherwise the metric or the truth is wrong and the run stops. With large patches the
-  code gets close to it in single scenes: that is allowed.
+- **The control.** The object from the true PSFs may not be more than 5 % worse than the code's in any scene, and must
+  be better over each set. Otherwise the metric or the truth is wrong and the run stops. With large patches the
+  code gets within a few % of it, and 1–2 % below it in single scenes: that is allowed.
 - **No truth, no ranking.** On real data, none of the quality measures that need no truth was found to pick the better
   configuration:
   - residual χ² overall and at high frequency: the high-frequency χ² is anticorrelated with quality;

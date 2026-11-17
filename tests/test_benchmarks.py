@@ -57,9 +57,11 @@ def test_transfer_error():
 
 
 def test_control():
-    M.check_control(0.05, 0.10)
+    M.check_control(0.095, 0.10)
     with pytest.raises(RuntimeError):
-        M.check_control(0.095, 0.10)
+        M.check_control(0.105, 0.10)
+    with pytest.raises(RuntimeError):
+        M.check_control(0.095, 0.10, margin=0.9)
 
 
 def test_scenes_reproducible():

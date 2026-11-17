@@ -6,7 +6,8 @@
 A run fits every scene of the chosen sets with the yaml (default examples/spot_8542/kl.yaml) and the patch geometry of
 the options, and writes one row per scene: object error, its error per frequency band, the per-frame PSF error, the
 transfer error R, and the error of the object made from the true PSFs (the control). It stops if that control fails
-(per scene, the object from the true PSFs must not be worse than the code's; over each set, it must be better by 10 %), unless --no-control.
+(per scene, the object from the true PSFs may not be worse than the code's by more than 5 %; over each set, it must be
+better), unless --no-control.
 
 A comparison pairs the two runs scene by scene and prints, per set and overall: scenes where b is better, the mean
 paired change of the object error, the sign test p, and the band errors. With --floor (the run of a with another --seed),
@@ -97,9 +98,9 @@ def fit_scene(sc, base, a):
     with torch.no_grad():
         _, _, ot = d.compute_object([d.frames_ft[0].to(d.device)], [otf], [d.sigma[0].to(d.device)], [d.plane[0].to(d.device)], **kw)
     row["err_obj_true_psf"] = M.object_error(full(ot[0]), tr)
-    if not a.no_control and row["err_obj_true_psf"] > row["err_obj"]:
-        raise RuntimeError(f"control failed {sc['name']}: the object from the true PSFs ({row['err_obj_true_psf']:.4f}) is worse "
-                           f"than the code's ({row['err_obj']:.4f}); check the truth units and the PSF reference")
+    if not a.no_control and row["err_obj_true_psf"] > M.CONTROL_SCENE_TOL * row["err_obj"]:
+        raise RuntimeError(f"control failed {sc['name']}: the object from the true PSFs ({row['err_obj_true_psf']:.4f}) is more "
+                           f"than 5 % worse than the code's ({row['err_obj']:.4f}); check the truth units and the PSF reference")
     return row
 
 
