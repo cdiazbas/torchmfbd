@@ -1,0 +1,176 @@
+"""Run a torchmfbd configuration over scenes with a known truth, or compare two runs.
+
+  python benchmarks/run.py [options] -o run.json
+  python benchmarks/run.py --compare a.json b.json [--floor a_seed1.json]
+
+A run fits every scene of the chosen sets with the yaml (default examples/spot_8542/kl.yaml) and the patch geometry of
+the options, and writes one row per scene: object error, its error per frequency band, the per-frame PSF error, the
+transfer error R, and the error of the object made from the true PSFs (the control). It stops if that control fails
+(per scene, the object from the true PSFs must not be worse than the code's; over each set, it must be better by 10 %), unless --no-control.
+
+A comparison pairs the two runs scene by scene and prints, per set and overall: scenes where b is better, the mean
+paired change of the object error, the sign test p, and the band errors. With --floor (the run of a with another --seed),
+it also prints the noise floor: the mean |paired change| between two runs of the same configuration. A difference
+inside the floor is not a difference. Runs from different devices are not compared: LBFGS amplifies the last bits of
+the arithmetic, and two GPU types differ by 3-4 % (Mac and Linux CPUs by up to 0.24 in the per-scene PSF error).
+"""
+import argparse, copy, json, logging, math, os, platform, sys, time, pathlib, warnings
+import numpy as np
+
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import metrics as M
+import scenes as S
+
+
+def device_name(gpu):
+    import torch
+    if gpu >= 0 and torch.cuda.is_available():
+        return torch.cuda.get_device_name(gpu)
+    return f"cpu {platform.machine()} {platform.processor() or platform.system()}"
+
+
+def fit_scene(sc, base, a):
+    import torch, torchmfbd
+    conf = copy.deepcopy(base)
+    conf["images"]["n_pixel"] = a.patch
+    if a.border is not None:
+        conf["images"]["apodization_border"] = a.border
+    if a.loss:
+        conf["optimization"]["loss_type"] = a.loss
+    conf["optimization"]["gpu"] = a.gpu
+    if a.seed:                                    # the wavefront starts at zero: another seed only matters with a
+        conf.setdefault("initialization", {})["modes_std"] = 1e-3   # random start (1e-3 rad rms), as for the floor
+    P4 = torchmfbd.Patchify4D()
+    frames = sc["frames"]
+    fr = torch.tensor((frames / frames.mean(axis=(-1, -2), keepdims=True))[None].astype("float32"))
+    pt = P4.patchify(fr, patch_size=a.patch, stride_size=a.stride, flatten_sequences=True)
+    torch.manual_seed(a.seed)
+    t0 = time.time()
+    d = torchmfbd.Deconvolution(conf); d.logger.setLevel(logging.ERROR)
+    d.add_frames(pt, id_object=0, id_diversity=0, diversity=0.0)
+    d.deconvolve(infer_object=False, optimizer=a.optimizer, simultaneous_sequences=10000, n_iterations=a.iterations)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    t_fit = time.time() - t0
+    full = lambda o: np.squeeze(P4.unpatchify(o.cpu().float(), apodization=6, weight_type="cosine", weight_params=30).numpy())
+    # the truth through the same patches, diffraction mask and recombination as the object
+    tpp = P4.patchify(torch.tensor(sc["truth"][None, None].astype("float32")), patch_size=a.patch, stride_size=a.stride, flatten_sequences=True)[:, 0]
+    tr = full(torch.fft.ifft2(torch.fft.fft2(tpp) * d.mask_diffraction_th[0].cpu()).real)
+    o = full(d.obj[0])
+    pe = torch.cat([b[0] for b in d.psf_seq], 0).cpu().numpy()
+    # true PSFs of every patch and frame, and their OTFs with the frames' shifts on the patch grid
+    n = frames.shape[-1]; J = frames.shape[0]
+    if "psf_at" in sc:
+        cy = P4.patchify(torch.tensor(np.broadcast_to(np.arange(n, dtype="float32")[:, None], (n, n)).copy())[None, None], patch_size=a.patch, stride_size=a.stride, flatten_sequences=True)[:, 0]
+        cx = P4.patchify(torch.tensor(np.broadcast_to(np.arange(n, dtype="float32")[None, :], (n, n)).copy())[None, None], patch_size=a.patch, stride_size=a.stride, flatten_sequences=True)[:, 0]
+        true_psfs = np.stack([np.stack([sc["psf_at"](j, float(cy[p].mean()), float(cx[p].mean())) for j in range(J)]) for p in range(cy.shape[0])])
+    else:
+        true_psfs = sc["psfs"]
+    shifted = lambda q, sh: np.roll(M.fold_psf(q, a.patch), sh, (0, 1))
+    if true_psfs.ndim == 3:                                                      # (frames, m, m)
+        tp = np.stack([shifted(q, sh) for q, sh in zip(true_psfs, sc["shifts"])])
+    else:                                                                        # (patches, frames, m, m)
+        tp = np.stack([np.stack([shifted(q, sh) for q, sh in zip(qp, sc["shifts"])]) for qp in true_psfs])
+    row = dict(scene=sc["name"], time_fit=t_fit, n_patches=int(pt.shape[0]),
+               err_obj=M.object_error(o, tr), err_obj_bestscale=M.object_error_bestscale(o, tr), band_err=M.band_error(o, tr),
+               err_psf=M.psf_error(pe, true_psfs), err_transfer=M.transfer_error(pe, np.fft.fft2(tp), tpp.numpy()))
+    # control: the object from the true OTFs, with the run's own noise and (marginal loss) spectrum parameters
+    otf = torch.fft.fft2(torch.tensor(tp, dtype=torch.float32), norm="ortho").to(d.device)
+    if otf.ndim == 3:
+        otf = otf[None].repeat(d.frames_ft[0].shape[0], 1, 1, 1)
+    kw = {}
+    if d.loss_type == "marginal":
+        assert len(d.pars_raw_seq) == 1, "one batch of patches expected"
+        kw = dict(pars_s0=d.pars_raw_seq[0][0], pars_s2=d.pars_raw_seq[0][1])
+    with torch.no_grad():
+        _, _, ot = d.compute_object([d.frames_ft[0].to(d.device)], [otf], [d.sigma[0].to(d.device)], [d.plane[0].to(d.device)], **kw)
+    row["err_obj_true_psf"] = M.object_error(full(ot[0]), tr)
+    if not a.no_control and row["err_obj_true_psf"] > row["err_obj"]:
+        raise RuntimeError(f"control failed {sc['name']}: the object from the true PSFs ({row['err_obj_true_psf']:.4f}) is worse "
+                           f"than the code's ({row['err_obj']:.4f}); check the truth units and the PSF reference")
+    return row
+
+
+def run(a):
+    import yaml
+    with open(a.config) as f:
+        base = yaml.safe_load(f)
+    base.pop("object2", None)
+    rows = []
+    for s in a.sets.split(","):
+        for sc in S.scene_set(s, n_frames=a.frames, noise=a.noise, alt=a.alt, h5_path=a.h5):
+            r = fit_scene(sc, base, a); r["set"] = s; rows.append(r)
+            print(f"{r['scene']:22s} object {r['err_obj']:.4f} (true PSFs {r['err_obj_true_psf']:.4f})  PSF {r['err_psf']:.3f}"
+                  f"  R {r['err_transfer']:.3f}  {r['time_fit']:.1f} s", flush=True)
+        R = [r for r in rows if r["set"] == s]
+        if not a.no_control:          # over the set, the true PSFs must give a clearly better object (a units error does not)
+            M.check_control(np.mean([r["err_obj_true_psf"] for r in R]), np.mean([r["err_obj"] for r in R]), f"set {s}")
+    info = dict(device=device_name(a.gpu), args=vars(a), date=time.strftime("%Y-%m-%d %H:%M"))
+    import torchmfbd
+    info["torchmfbd"] = str(pathlib.Path(torchmfbd.__file__).resolve().parent)
+    json.dump(dict(info=info, rows=rows), open(a.output, "w"), indent=1)
+    print(f"wrote {a.output}: {len(rows)} scenes, mean object error {np.mean([r['err_obj'] for r in rows]):.4f}")
+
+
+def sign_p(wins, n):
+    """Two-sided exact sign test."""
+    k = min(wins, n - wins)
+    return min(1.0, 2 * sum(math.comb(n, i) for i in range(k + 1)) / 2**n)
+
+
+def compare(a_path, b_path, floor_path=None):
+    A, B = json.load(open(a_path)), json.load(open(b_path))
+    if A["info"]["device"] != B["info"]["device"]:
+        sys.exit(f"not comparable: {A['info']['device']} against {B['info']['device']} (run both on the same device)")
+    ra = {r["scene"]: r for r in A["rows"]}; rb = {r["scene"]: r for r in B["rows"]}
+    common = [s for s in ra if s in rb]
+    floor = None
+    if floor_path:
+        F = json.load(open(floor_path)); assert F["info"]["device"] == A["info"]["device"], "floor run on another device"
+        rf = {r["scene"]: r for r in F["rows"]}
+        floor = float(np.mean([abs(100 * (rf[s]["err_obj"] / ra[s]["err_obj"] - 1)) for s in common if s in rf]))
+    groups = {}
+    for s in common:
+        groups.setdefault(ra[s].get("set", "all"), []).append(s)
+    groups["all"] = common
+    print(f"a = {a_path}\nb = {b_path}\ndevice {A['info']['device']}" + (f"; noise floor +-{floor:.1f} % (|a - a, other seed|)" if floor is not None else ""))
+    for g, sc in groups.items():
+        ch = np.array([100 * (rb[s]["err_obj"] / ra[s]["err_obj"] - 1) for s in sc])
+        w = int((ch < 0).sum())
+        ba = np.mean([ra[s]["band_err"] for s in sc], axis=0); bb = np.mean([rb[s]["band_err"] for s in sc], axis=0)
+        verdict = "" if floor is None else ("  beyond the noise floor" if abs(ch.mean()) > floor else "  within the noise floor")
+        print(f"{g:12s} n={len(sc):3d}  object {np.mean([ra[s]['err_obj'] for s in sc]):.4f} -> {np.mean([rb[s]['err_obj'] for s in sc]):.4f}"
+              f"  change {ch.mean():+6.1f} %  b better in {w}/{len(sc)}  sign p={sign_p(w, len(sc)):.2g}"
+              f"  R {np.mean([ra[s]['err_transfer'] for s in sc]):.3f} -> {np.mean([rb[s]['err_transfer'] for s in sc]):.3f}"
+              f"  >25 % worse: {int((ch > 25).sum())}{verdict}")
+        print(f"{'':12s} band error " + "  ".join(f"{lo:.2f}-{hi:.2f}: {x:.2f}->{y:.2f}" for (lo, hi), x, y in zip(M.BANDS, ba, bb)))
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--compare", nargs=2, metavar=("A", "B"))
+    p.add_argument("--floor", help="with --compare: the run of A with another --seed")
+    p.add_argument("--config", default=str(HERE.parent / "examples" / "spot_8542" / "kl.yaml"))
+    p.add_argument("--sets", default="synth,aniso-synth", help="comma list of synth, aniso-synth, real, aniso-real")
+    p.add_argument("--patch", type=int, default=128); p.add_argument("--stride", type=int, default=32)
+    p.add_argument("--border", type=int, help="apodization border (default: the yaml's)")
+    p.add_argument("--loss", choices=["joint", "marginal"], help="default: the yaml's")
+    p.add_argument("--optimizer", default="lbfgs"); p.add_argument("--iterations", type=int, default=10)
+    p.add_argument("--frames", type=int, default=12); p.add_argument("--noise", type=float, default=0.02)
+    p.add_argument("--alt", type=float, default=5000.0, help="height of the upper seeing layer of the aniso sets, m")
+    p.add_argument("--seed", type=int, default=0, help="seed of the initial wavefront (another seed gives the noise floor)")
+    p.add_argument("--gpu", type=int, default=0, help="-1 for the CPU")
+    p.add_argument("--h5", help="the burst file, for the real sets")
+    p.add_argument("--no-control", action="store_true")
+    p.add_argument("-o", "--output", default="run.json")
+    a = p.parse_args()
+    warnings.simplefilter("ignore"); os.environ.setdefault("TQDM_DISABLE", "1")
+    if a.compare:
+        compare(*a.compare, a.floor)
+    else:
+        run(a)
+
+
+if __name__ == "__main__":
+    main()
