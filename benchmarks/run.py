@@ -103,6 +103,78 @@ def fit_scene(sc, base, a):
     return row
 
 
+def fit_time_scene(sc, base, a):
+    """A scene with time steps (set aniso-time): the patches of every step fitted together with filter_loss
+    wiener_time and the time term of weight --time-lambda; metrics per step, then averaged over the steps."""
+    import torch, torchmfbd
+    conf = copy.deepcopy(base)
+    conf["images"]["n_pixel"] = a.patch
+    if a.border is not None:
+        conf["images"]["apodization_border"] = a.border
+    if a.loss:
+        conf["optimization"]["loss_type"] = a.loss
+    conf["optimization"]["gpu"] = a.gpu
+    conf["optimization"]["filter_loss"] = "wiener_time"
+    conf["regularization"] = dict(conf.get("regularization") or {}, time={"lambda": a.time_lambda})
+    if a.coupling:
+        conf["regularization"]["coupling"] = {"lambda": a.coupling, "n_modes": a.coupling_modes}
+    elif "coupling" in conf["regularization"] and a.no_yaml_coupling:
+        conf["regularization"].pop("coupling")
+    if a.filter:
+        conf["object1"]["image_filter"] = a.filter
+    if a.seed:
+        conf.setdefault("initialization", {})["modes_std"] = 1e-3
+    P4 = torchmfbd.Patchify4D()
+    frames = sc["frames"]                                                # (T, J, n, n)
+    T, J, n = frames.shape[0], frames.shape[1], frames.shape[-1]
+    fr = frames / frames.mean(axis=(-1, -2), keepdims=True)
+    pt = torch.stack([P4.patchify(torch.tensor(fr[t][None].astype("float32")), patch_size=a.patch, stride_size=a.stride,
+                                  flatten_sequences=True) for t in range(T)], dim=1)          # (L, T, J, m, m)
+    pairs = P4.neighbours()
+    L = pt.shape[0]
+    torch.manual_seed(a.seed)
+    t0 = time.time()
+    d = torchmfbd.Deconvolution(conf); d.logger.setLevel(logging.ERROR)
+    d.add_frames(pt, id_object=0, id_diversity=0, diversity=0.0)
+    if a.su_rule:
+        sig = float(torch.mean(d.sigma[0])); nfr = d.frames[0].shape[1]
+        d.config["object1"]["s_u_joint"] = 250.0 * (sig / 0.02) * max(12.0 / nfr, 1.0)
+    d.set_neighbours(pairs)
+    d.deconvolve(infer_object=False, optimizer=a.optimizer, simultaneous_sequences=10000, n_iterations=a.iterations)
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    t_fit = time.time() - t0
+    full = lambda o: np.squeeze(P4.unpatchify(o.cpu().float(), apodization=6, weight_type="cosine", weight_params=30).numpy())
+    obj = d.obj[0].reshape(L, T, a.patch, a.patch)
+    pe = torch.cat([b[0] for b in d.psf_seq], 0).cpu().numpy().reshape(L, T, J, a.patch, a.patch)
+    cy = P4.patchify(torch.tensor(np.broadcast_to(np.arange(n, dtype="float32")[:, None], (n, n)).copy())[None, None], patch_size=a.patch, stride_size=a.stride, flatten_sequences=True)[:, 0]
+    cx = P4.patchify(torch.tensor(np.broadcast_to(np.arange(n, dtype="float32")[None, :], (n, n)).copy())[None, None], patch_size=a.patch, stride_size=a.stride, flatten_sequences=True)[:, 0]
+    centres = [(float(cy[p].mean()), float(cx[p].mean())) for p in range(L)]
+    per_step, tps, trs = [], [], []
+    for t in range(T):
+        tpp = P4.patchify(torch.tensor(sc["truth"][t][None, None].astype("float32")), patch_size=a.patch, stride_size=a.stride, flatten_sequences=True)[:, 0]
+        tr = full(torch.fft.ifft2(torch.fft.fft2(tpp) * d.mask_diffraction_th[0].cpu()).real); trs.append(tr)
+        o = full(obj[:, t])
+        true_psfs = np.stack([np.stack([sc["psf_at"][t](j, y, x) for j in range(J)]) for (y, x) in centres])
+        tp = np.stack([np.stack([np.roll(M.fold_psf(q, a.patch), sh, (0, 1)) for q, sh in zip(qp, sc["shifts"][t])]) for qp in true_psfs])
+        tps.append(tp)
+        per_step.append(dict(err_obj=M.object_error(o, tr), band_err=M.band_error(o, tr), err_psf=M.psf_error(pe[:, t], true_psfs),
+                             err_transfer=M.transfer_error(pe[:, t], np.fft.fft2(tp), tpp.numpy())))
+    row = dict(scene=sc["name"], time_fit=t_fit, n_patches=int(L), n_steps=T, err_obj_steps=[r["err_obj"] for r in per_step],
+               err_obj=float(np.mean([r["err_obj"] for r in per_step])), band_err=list(np.mean([r["band_err"] for r in per_step], axis=0)),
+               err_psf=float(np.mean([r["err_psf"] for r in per_step])), err_transfer=float(np.mean([r["err_transfer"] for r in per_step])))
+    # control: the object from the true OTFs of every patch and step, (s t) order as the library flattens them
+    otf = torch.fft.fft2(torch.tensor(np.stack(tps, axis=1).reshape(L * T, J, a.patch, a.patch), dtype=torch.float32), norm="ortho").to(d.device)
+    with torch.no_grad():
+        _, _, ot = d.compute_object([d.frames_ft[0].to(d.device)], [otf], [d.sigma[0].to(d.device)], [d.plane[0].to(d.device)])
+    ot = ot[0].reshape(L, T, a.patch, a.patch)
+    row["err_obj_true_psf"] = float(np.mean([M.object_error(full(ot[:, t]), trs[t]) for t in range(T)]))
+    if not a.no_control and row["err_obj_true_psf"] > M.CONTROL_SCENE_TOL * row["err_obj"]:
+        raise RuntimeError(f"control failed {sc['name']}: the object from the true PSFs ({row['err_obj_true_psf']:.4f}) is more "
+                           f"than 5 % worse than the code's ({row['err_obj']:.4f})")
+    return row
+
+
 def run(a):
     import yaml
     with open(a.config) as f:
@@ -111,7 +183,7 @@ def run(a):
     rows = []
     for s in a.sets.split(","):
         for sc in S.scene_set(s, n_frames=a.frames, noise=a.noise, alt=a.alt, h5_path=a.h5):
-            r = fit_scene(sc, base, a); r["set"] = s; rows.append(r)
+            r = (fit_time_scene if sc.get("time") else fit_scene)(sc, base, a); r["set"] = s; rows.append(r)
             print(f"{r['scene']:22s} object {r['err_obj']:.4f} (true PSFs {r['err_obj_true_psf']:.4f})  PSF {r['err_psf']:.3f}"
                   f"  R {r['err_transfer']:.3f}  {r['time_fit']:.1f} s", flush=True)
         R = [r for r in rows if r["set"] == s]
@@ -163,7 +235,7 @@ def main():
     p.add_argument("--compare", nargs=2, metavar=("A", "B"))
     p.add_argument("--floor", help="with --compare: the run of A with another --seed")
     p.add_argument("--config", default=str(HERE.parent / "examples" / "spot_8542" / "kl.yaml"))
-    p.add_argument("--sets", default="synth,aniso-synth", help="comma list of synth, aniso-synth, real, aniso-real")
+    p.add_argument("--sets", default="synth,aniso-synth", help="comma list of synth, aniso-synth, real, aniso-real, aniso-time")
     p.add_argument("--patch", type=int, default=128); p.add_argument("--stride", type=int, default=32)
     p.add_argument("--border", type=int, help="apodization border (default: the yaml's)")
     p.add_argument("--loss", choices=["joint", "marginal"], help="default: the yaml's")
@@ -173,6 +245,8 @@ def main():
     p.add_argument("--filter", choices=["scharmer", "garrote", "tophat"], help="object filter (default: the yaml's)")
     p.add_argument("--su-rule", action="store_true", help="joint loss: s_u_joint = 250 (sigma/0.02)(12/N) from the data")
     p.add_argument("--nullspace", type=float, default=0.0, help="D/r0 of the experimental wavefront restriction (0: off)")
+    p.add_argument("--time-lambda", type=float, default=1.5e-4, help="aniso-time set: weight of the time term (regularization time)")
+    p.add_argument("--no-yaml-coupling", action="store_true", help="drop a coupling entry of the yaml (to measure without it)")
     p.add_argument("--frames", type=int, default=12); p.add_argument("--noise", type=float, default=0.02)
     p.add_argument("--alt", type=float, default=5000.0, help="height of the upper seeing layer of the aniso sets, m")
     p.add_argument("--seed", type=int, default=0, help="seed of the initial wavefront (another seed gives the noise floor)")

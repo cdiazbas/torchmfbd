@@ -47,8 +47,10 @@ def test_options_together(make_synthetic_frames, loss, filt, coupling, nullspace
     assert torch.all(torch.isfinite(d.obj[0])), "non-finite object"
 
 
-def _time_fit(make_synthetic_frames, filt, coupling, lam_t=1.0):
+def _time_fit(make_synthetic_frames, filt, coupling, lam_t=1.0, lam_c=30.0):
     cfg = _config("joint", filt, coupling, False)
+    if coupling:
+        cfg["regularization"]["coupling"]["lambda"] = lam_c
     cfg["optimization"]["filter_loss"] = "wiener_time"
     cfg["regularization"]["time"] = {"lambda": lam_t}
     obj, frames = make_synthetic_frames(_config("joint", "scharmer", False, False), 4, 5, 0.005, seed=0)
@@ -68,6 +70,24 @@ def test_time_with_each_filter(make_synthetic_frames, filt):
     assert torch.all(torch.isfinite(d.obj[0]))
 
 
-def test_patch_coupling_with_time_refuses(make_synthetic_frames):
-    with pytest.raises(ValueError, match="time dimension"):
-        _time_fit(make_synthetic_frames, "scharmer", True)
+@pytest.mark.parametrize("filt", ["scharmer", "garrote", "tophat"])
+def test_patch_coupling_with_time(make_synthetic_frames, filt):
+    d = _time_fit(make_synthetic_frames, filt, True)
+    assert torch.all(torch.isfinite(d.loss)) and d.loss[-1] < d.loss[0]
+    assert torch.all(torch.isfinite(d.obj[0]))
+
+
+def test_patch_coupling_with_time_pairs_within_each_step(make_synthetic_frames):
+    # 2 patches x 2 steps, flattened (s t): patch 0 is sequences 0 (t0) and 1 (t1), patch 1 is 2 and 3. A strong
+    # coupling of patches 0 and 1 must pull 0 towards 2 and 1 towards 3, not 0 towards 1 (different steps)
+    def spread(d, a, b):
+        m = d.modes_seq[0][..., 2:10]
+        return float(torch.sum((m[a] - m[b])**2))
+    free = _time_fit(make_synthetic_frames, "scharmer", False)
+    tied = _time_fit(make_synthetic_frames, "scharmer", True, lam_c=1e6)
+    assert spread(tied, 0, 2) < 0.01 * spread(free, 0, 2)
+    assert spread(tied, 1, 3) < 0.01 * spread(free, 1, 3)
+    # a strong coupling also shrinks the modes overall, so compare within the tied fit: the pairs of one step must end
+    # far closer than the same patch at two steps
+    assert spread(tied, 0, 2) < 0.1 * spread(tied, 0, 1)
+    assert spread(tied, 1, 3) < 0.1 * spread(tied, 2, 3)

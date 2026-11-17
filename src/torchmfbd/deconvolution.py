@@ -652,6 +652,7 @@ class Deconvolution(object):
             Indices of the sequences as added with add_frames (with flatten_sequences=True), e.g. Patchify4D.neighbours().
             Only pairs whose two patches are fitted in the same batch are coupled: give simultaneous_sequences at least
             the number of patches.
+            With a time dimension the pairs still name patches; each is coupled within every time step, not across steps.
         """
         self.coupling_pairs = [(int(p), int(q)) for p, q in pairs]
 
@@ -2752,11 +2753,13 @@ class Deconvolution(object):
             if i_seq == 0 and self.coupling_lambda > 0 and self.coupling_pairs is None:
                 self.logger.warning("regularization coupling is set but no neighbours were given (set_neighbours): no coupling")
             if self.coupling_lambda > 0 and self.coupling_pairs is not None and self.psf_model.lower() in ['zernike', 'kl']:
-                if self.n_t > 1:
-                    raise ValueError("regularization coupling is not available with a time dimension")
+                # With time, sequences are flattened as (s t): sequence s at step t is s * n_t + t. The pairs name
+                # patches (s); each pair is coupled within every time step, not across steps (the seeing of different
+                # steps is independent)
+                pairs = [(p * self.n_t + t, q * self.n_t + t) for p, q in self.coupling_pairs for t in range(self.n_t)]
                 pos = {int(g): k for k, g in enumerate(seq)}
-                E = [(pos[p], pos[q]) for p, q in self.coupling_pairs if p in pos and q in pos]
-                n_cut = sum((p in pos) != (q in pos) for p, q in self.coupling_pairs)
+                E = [(pos[p], pos[q]) for p, q in pairs if p in pos and q in pos]
+                n_cut = sum((p in pos) != (q in pos) for p, q in pairs)
                 if n_cut:
                     self.logger.warning(f"coupling: {n_cut} pairs of neighbours fall in different batches and are not coupled; "
                                         f"raise simultaneous_sequences to fit all patches together")

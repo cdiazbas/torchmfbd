@@ -14,6 +14,8 @@ Sets:
                64-px grid of PSFs with bilinear weights. Needs nothing.
   real         18 crops (256 px) of the sharpest frame of the example's burst, at D/r0 3, 5 and 10. Needs the burst file.
   aniso-real   12 such crops with the two-layer seeing of aniso-synth. Needs the burst file.
+  aniso-time   6 synthetic 256-px scenes evolving over 4 time steps, each step with its own two-layer seeing, for the
+               time path (filter_loss wiener_time). Needs nothing.
 The burst file is spot_20200727_083509_8542_npix512_original.h5, the data of examples/spot_8542 (not in the repository;
 see README.md for where to get it).
 """
@@ -121,6 +123,25 @@ def _degrade_aniso(gt384, rng, n_frames, noise, d_r0, alt):
     return np.array(frames), (lambda j, y, x: psf_384(j, y + 64, x + 64)), shifts
 
 
+def time_scenes(n_frames=12, noise=0.02, alt=5000.0, n_steps=4, evolve=0.3):
+    """Set aniso-time: 6 synthetic 256-px scenes that evolve in time, n_steps bursts each. The object of step t is
+    cos(evolve t) (A - 1) + sin(evolve t) (B - 1) + 1 for two independent k^-3 fields A and B (the evolution of
+    timestep/synth.py), and every step gets its own two-layer seeing (D/r0 5 and 10, upper layer at `alt`).
+    Each scene: name, frames (T, J, 256, 256), truth (T, 256, 256), psf_at[t](j, y, x), shifts[t], all per step."""
+    for d_r0 in (5.0, 10.0):
+        for s in range(3):
+            rng = np.random.default_rng(8000 + 100 * int(d_r0) + s)
+            A, B = _object(rng, 384), _object(rng, 384)
+            frames, truths, psf_at, shifts = [], [], [], []
+            for t in range(n_steps):
+                g384 = np.cos(evolve * t) * (A - 1) + np.sin(evolve * t) * (B - 1) + 1
+                f, p, sh = _degrade_aniso(g384, rng, n_frames, noise, d_r0, alt)
+                frames.append(f); psf_at.append(p); shifts.append(sh)
+                truths.append(g384[64:320, 64:320] / f.mean())
+            yield dict(name=f"time_r0{d_r0:g}_s{s}", frames=np.array(frames), truth=np.array(truths), psf_at=psf_at,
+                       shifts=shifts, time=True)
+
+
 def _burst_truth(h5_path):
     import h5py
     with h5py.File(h5_path, "r") as f:
@@ -136,6 +157,9 @@ def scene_set(name, n_frames=12, noise=0.02, alt=5000.0, h5_path=None):
     if name == "synth":
         for seed in range(13):
             yield synthetic(seed, n_frames, noise)
+        return
+    if name == "aniso-time":
+        yield from time_scenes(n_frames, noise, alt)
         return
     if name in ("real", "aniso-real"):
         if h5_path is None:
