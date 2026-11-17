@@ -123,6 +123,8 @@ psf
 * ``model`` : model to be used for the PSF. Options are ``kl`` (which uses Karhunen-Loeve modes) or ``zernike`` (which uses Zernike modes)
 * ``nmax_modes`` : number of modes to be used for the PSF
 * ``orthogonalize`` : if True, the modes are re-orthogonalized. This is relevant when strong central obscuration is present.
+* ``nullspace_d_r0`` : if present, the fit is done twice. From the first, the information that the data of each patch carry on its wavefront coefficients is compared with a Kolmogorov prior of this D/r0 (the KL variances of the basis), and the second fit may change the wavefront only along the combinations of coefficients that the data determine better than the prior; the others stay at zero. Only for the ``kl`` model, the ``joint`` loss, one object and no phase diversity. It roughly doubles the time. Absent by default, and experimental: measured on 31 scenes with a known truth (64-px patches, LBFGS 10), it lowers the object error of synthetic bursts by 11 % but raises it on real sunspot scenes at D/r0 5 by 9 % (6 of 6 scenes), and the PSF error with it
+* ``nullspace_threshold`` : ratio of data information to prior above which a direction is kept (default 1)
 
 initialization
 ^^^^^^^^^^^^^^
