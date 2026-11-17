@@ -2440,6 +2440,9 @@ class Deconvolution(object):
         inputs = (list(self.diversity), list(self.sigma))
 
         self.nullspace_P_seq = None
+        # Refuse an unsupported restriction before the first pass, not after it (the full check is in nullspace_projectors)
+        if self.nullspace_d_r0 is not None and (self.loss_type != 'joint' or infer_object or self.psf_model.lower() != 'kl'):
+            raise ValueError("The wavefront restriction is implemented for the KL model and the joint loss, without infer_object")
         self._deconvolve_pass(**kwargs)
 
         if self.nullspace_d_r0 is not None:
@@ -2506,9 +2509,8 @@ class Deconvolution(object):
         kx, ky = np.meshgrid(k, k, indexing='ij')
         half = torch.tensor((self.rho[0].cpu().numpy() <= 1.0) & ((kx > 0) | ((kx == 0) & (ky > 0))), device=self.device)
 
-        # one noise variance pooled over all sequences and frames, unlike the losses, which use one per sequence; the
-        # measured effect of the option (config.rst) was obtained with this pooled value
-        s2 = float(torch.mean(self.sigma[0]**2))
+        # noise variance of each sequence (mean over its frames), as the losses use it
+        s2_seq = torch.mean(self.sigma[0]**2, dim=-1).double()
         ind = self.split_and_merge(self.n_seq * self.n_t, self.n_t, self.simultaneous_sequences)
         P_seq, kept = [], []
         for i_seq, seq in enumerate(ind):
@@ -2525,7 +2527,7 @@ class Deconvolution(object):
                 G = torch.complex(Jr[..., 0, :], Jr[..., 1, :])[:, half, :].permute(1, 0, 2)
                 with torch.no_grad():
                     t = otf_of(modes[j])[:, half].T
-                w = (2.0 / s2) * O2[j][half]
+                w = (2.0 / float(s2_seq[seq[j]])) * O2[j][half]
                 F = torch.zeros((n_f * nm, n_f * nm), dtype=torch.float64, device=self.device)
                 for f in range(n_f):
                     F[f * nm:(f + 1) * nm, f * nm:(f + 1) * nm] = ((G[:, f, :].conj().T * w) @ G[:, f, :]).real
