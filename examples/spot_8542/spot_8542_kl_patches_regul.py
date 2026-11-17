@@ -59,7 +59,7 @@ if __name__ == '__main__':
 
     # Patchify and add the frames
     for i in range(2):        
-        frames_patches = patchify.patchify(frames[:, i, :, :, :], patch_size=64, stride_size=50, flatten_sequences=True)
+        frames_patches = patchify.patchify(frames[:, i, :, :, :], patch_size=128, stride_size=32, flatten_sequences=True)   # n_pixel of kl.yaml
         decSI.add_frames(frames_patches, id_object=i, id_diversity=0, diversity=0.0)
             
     

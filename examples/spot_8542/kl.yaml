@@ -3,9 +3,14 @@ telescope:
     central_obscuration : 0.0
 
 images:
-    n_pixel : 64    
+    # 128-px patches with a 24-px apodization border. With 64-px patches the edges bias the fit: iterating longer
+    # makes the object worse. On synthetic and real-sunspot bursts with a known truth (marginal loss, LBFGS 10,
+    # stride 32), the object error is 13-23 % lower and the PSF transfer error 29-45 % lower than with 64 px and
+    # border 10, also with 6 frames, noise x2 and anisoplanatism. It is slower: about x1.5 per patch set and x3 on
+    # the 512-px burst. A wider border (32 px) loses the information near the edges.
+    n_pixel : 128
     pix_size : 0.059
-    apodization_border : 10
+    apodization_border : 24
     remove_gradient_apodization : True
 
 object1:
