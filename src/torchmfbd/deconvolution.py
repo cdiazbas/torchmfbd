@@ -249,14 +249,6 @@ class Deconvolution(object):
         else:
             self.remove_tt = False
 
-        # Wavefront restricted to the directions the data determine better than a Kolmogorov prior of this D/r0
-        # (psf.nullspace_d_r0; absent: no restriction). See nullspace_projectors
-        self.nullspace_d_r0 = self.config['psf'].get('nullspace_d_r0', None)
-        self.nullspace_threshold = float(self.config['psf'].get('nullspace_threshold', 1.0))
-        self.nullspace_P_seq = None
-        self.nullspace_P_batch = None
-        self.kl_variance = None
-
         if self.remove_tt:
             self.logger.info(f"Tip-tilt will be removed from the modes during optimization")
 
@@ -413,7 +405,6 @@ class Deconvolution(object):
                         self.logger.info(f"Loading precomputed KL basis: {filename}")
                         tmp = np.load(f"{filename}")
                         basis = tmp['basis']                
-                        self.kl_variance = tmp['variance'] if 'variance' in tmp else None
                     else:
                         self.logger.info(f"Computing KL modes {filename}")
                         self.kl = kl_modes.KL()
@@ -434,7 +425,6 @@ class Deconvolution(object):
                             self.logger.info(f"  * Orthogonalization done")
 
                         np.savez(f"{filename}", basis=basis, variance=self.kl.varKL)
-                        self.kl_variance = self.kl.varKL
                 
                 if (self.psf_model.lower() == 'nmf'):
                     
@@ -863,9 +853,6 @@ class Deconvolution(object):
         
 
         n_seq, n_f, n_active = modes.shape
-
-        if self.nullspace_P_batch is not None:
-            modes = self.restrict_modes(modes)
                                         
         psf_norm = [None] * self.n_o
         otf = [None] * self.n_o
@@ -2234,9 +2221,6 @@ class Deconvolution(object):
         self.obj_diffraction_seq = [None] * n_sequences
         
         for i_seq, seq in enumerate(ind):
-
-            # Restriction of the wavefront of this batch, if a first pass computed one
-            self.nullspace_P_batch = self.nullspace_P_seq[i_seq].to(self.device) if self.nullspace_P_seq is not None else None
                             
             if len(seq) > 1:
                 self.logger.info(f"Processing sequences [{seq[0]+1},{seq[-1]+1}]/{n_seq_total}")
@@ -2301,9 +2285,7 @@ class Deconvolution(object):
             tfinal = time.time()
 
             # del psf, degraded, obj_filter, obj_filter_diffraction, degraded_ft, obj_ft, obj_filter_ft, otf
-
-        self.nullspace_P_batch = None
-
+        
         # Concatenate the results from all sequences and all objects independently
         # self.psf = [None] * self.n_o
         # self.degraded = [None] * self.n_o
@@ -2387,131 +2369,7 @@ class Deconvolution(object):
         # Directly slice the main sequence
         return [sequence[i:i + step_size] for i in range(0, len(sequence), step_size)]
             
-    def deconvolve(self,
-                   simultaneous_sequences=1,
-                   infer_object=False,
-                   optimizer='adam',
-                   obj_in=None,
-                   modes_in=None,
-                   n_iterations=20,
-                   sequence_length=None):
-        """
-        Perform deconvolution on a set of frames (see _deconvolve_pass for the parameters).
-
-        With psf.nullspace_d_r0 in the configuration the fit is done twice: the first pass is the usual one; from
-        it nullspace_projectors finds, for each sequence, the combinations of wavefront coefficients that the data
-        determine better than a Kolmogorov prior, and the second pass, from the same start, lets the wavefront
-        change only along those. The results are those of the second pass; self.modes are the free coefficients,
-        and the PSFs are built from their projection.
-        """
-        kwargs = dict(simultaneous_sequences=simultaneous_sequences, infer_object=infer_object, optimizer=optimizer,
-                      obj_in=obj_in, modes_in=modes_in, n_iterations=n_iterations, sequence_length=sequence_length)
-
-        # A pass replaces the per-burst diversity and noise by their combination over objects: keep the inputs
-        inputs = (list(self.diversity), list(self.sigma))
-
-        self.nullspace_P_seq = None
-        self._deconvolve_pass(**kwargs)
-
-        if self.nullspace_d_r0 is not None:
-            self.nullspace_P_seq = self.nullspace_projectors(self.nullspace_d_r0, self.nullspace_threshold)
-            self.logger.info(f"Second pass with the wavefront restricted to the directions the data determine")
-            self.diversity, self.sigma = list(inputs[0]), list(inputs[1])
-            self._deconvolve_pass(**kwargs)
-
-    def restrict_modes(self, modes):
-        """
-        Project the wavefront coefficients of the current batch, (n_seq, n_f, n_active), on the directions kept by
-        nullspace_projectors. The modes not yet active in the annealing enter as zero.
-        """
-        n_seq, n_f, n_active = modes.shape
-        full = torch.zeros((n_seq, n_f, self.n_modes), device=modes.device, dtype=modes.dtype)
-        full[..., 0:n_active] = modes
-        full = torch.einsum('spq,sq->sp', self.nullspace_P_batch, full.reshape(n_seq, -1))
-        return full.reshape(n_seq, n_f, self.n_modes)[..., 0:n_active]
-
-    def nullspace_projectors(self, d_r0, threshold=1.0):
-        """
-        For each batch of the last pass, the projector of every sequence on the wavefront directions that its data
-        determine better than a Kolmogorov prior.
-
-        With the object as unknown, the information that the data d_k = O_k t_k + n carry on the wavefront
-        coefficients theta is F = (2/s2) sum_k |O_k|^2 Re[J_k^H (I - t_k t_k^H/|t_k|^2) J_k], over the half plane
-        inside the diffraction cutoff, with t_k the OTFs of the frames at frequency k and J_k = dt_k/dtheta. It is
-        evaluated at the fitted wavefront, with the fitted object and the noise of the frames. Whitened by the prior
-        standard deviations S (KL variances of the basis times (D/r0)^(5/3), none on tip-tilt), the eigenvectors U_r
-        of S F S with eigenvalue above `threshold` are the directions the data determine; P = S U_r U_r^T S^-1.
-
-        Parameters
-        ----------
-        d_r0 : float
-            D/r0 of the Kolmogorov prior.
-        threshold : float
-            Eigenvalue of S F S above which a direction is kept (1: the data and the prior weigh the same).
-
-        Returns
-        -------
-        list of torch.Tensor
-            One (n_seq, n_f n_modes, n_f n_modes) tensor per batch, on the CPU.
-        """
-        if self.psf_model.lower() != 'kl' or self.kl_variance is None or self.add_piston:
-            raise ValueError("The wavefront restriction needs the KL model (without piston) and the KL variances of its basis file")
-        if self.loss_type != 'joint' or self.infer_object or self.n_o != 1 or any(len(d) > 1 for d in self.init_frame_diversity):
-            raise ValueError("The wavefront restriction is implemented for the joint loss, one object and no phase diversity")
-
-        n_f, nm = self.n_f, self.n_modes
-        sig = np.sqrt(np.asarray(self.kl_variance[0:nm], dtype='float64') * d_r0**(5.0 / 3.0))
-        sig[0:2] = 10.0
-        S = torch.tensor(np.tile(sig, n_f), dtype=torch.float64)
-
-        basis = self.basis[0].double()
-        pupil = self.pupil[0].double()
-        def otf_of(theta):
-            wf = torch.einsum('...m,mxy->...xy', theta, basis)
-            ft = torch.fft.fft2(pupil * torch.exp(1j * wf), norm='ortho')
-            psf = (ft.conj() * ft).real
-            return torch.fft.fft2(psf / psf.sum((-1, -2), keepdim=True), norm='ortho')
-
-        # Independent frequencies: half plane inside the cutoff, without k = 0
-        k = np.fft.fftfreq(self.npix) * self.npix
-        kx, ky = np.meshgrid(k, k, indexing='ij')
-        half = torch.tensor((self.rho[0].cpu().numpy() <= 1.0) & ((kx > 0) | ((kx == 0) & (ky > 0))), device=self.device)
-
-        s2 = float(torch.mean(self.sigma[0]**2))
-        ind = self.split_and_merge(self.n_seq * self.n_t, self.n_t, self.simultaneous_sequences)
-        P_seq, kept = [], []
-        for i_seq, seq in enumerate(ind):
-            modes = self.modes_seq[i_seq].double().to(self.device)
-            modes[:, :, 0:2] = modes[:, :, 0:2] - modes[:, 0:1, 0:2].clone()
-            otf = torch.fft.fft2(self.psf_seq[i_seq][0].to(self.device), norm='ortho')
-            with torch.no_grad():
-                _, obj_ft, _ = self.compute_object([self.frames_ft[0][seq, ...].to(self.device)], [otf],
-                                                   [self.sigma[0][seq, ...].to(self.device)], [self.plane[0][seq, ...].to(self.device)])
-            O2 = (obj_ft[0].abs()**2).double()
-            P = torch.zeros((len(seq), n_f * nm, n_f * nm))
-            for j in range(len(seq)):
-                Jr = torch.func.vmap(torch.func.jacfwd(lambda t: torch.view_as_real(otf_of(t))))(modes[j])
-                G = torch.complex(Jr[..., 0, :], Jr[..., 1, :])[:, half, :].permute(1, 0, 2)
-                with torch.no_grad():
-                    t = otf_of(modes[j])[:, half].T
-                w = (2.0 / s2) * O2[j][half]
-                F = torch.zeros((n_f * nm, n_f * nm), dtype=torch.float64, device=self.device)
-                for f in range(n_f):
-                    F[f * nm:(f + 1) * nm, f * nm:(f + 1) * nm] = ((G[:, f, :].conj().T * w) @ G[:, f, :]).real
-                V = (G.conj() * t[:, :, None]).reshape(G.shape[0], n_f * nm)
-                F = F - ((V.conj().T * (w / (t.abs()**2).sum(1))) @ V).real
-                F = 0.5 * (F + F.T).cpu()
-                ev, U = torch.linalg.eigh(S[:, None] * F * S[None, :])
-                U = U[:, ev > threshold]
-                P[j] = (S[:, None] * (U @ U.T) / S[None, :]).float()
-                kept.append(int((ev > threshold).sum()))
-            P_seq.append(P)
-
-        self.nullspace_kept = kept
-        self.logger.info(f"Wavefront directions kept per sequence (D/r0 {d_r0}, threshold {threshold}): median {np.median(kept):.0f} of {n_f * nm}")
-        return P_seq
-
-    def _deconvolve_pass(self,                                    
+    def deconvolve(self,                                    
                    simultaneous_sequences=1,
                    infer_object=False,
                    optimizer='adam',
@@ -2688,9 +2546,6 @@ class Deconvolution(object):
             self.psf_diffraction, self.psf_diffraction_ft = self.compute_psf_diffraction()
         
         for i_seq, seq in enumerate(ind):
-
-            # Restriction of the wavefront of this batch, if a first pass computed one
-            self.nullspace_P_batch = self.nullspace_P_seq[i_seq].to(self.device) if self.nullspace_P_seq is not None else None
             
             if i_seq == 0:
                 label_time = ''
@@ -3310,8 +3165,6 @@ class Deconvolution(object):
 
             # del psf, degraded, obj_filter, obj_filter_diffraction, degraded_ft, obj_ft, obj_filter_ft, otf
         
-        self.nullspace_P_batch = None
-
         deltat = tfinal - tinit
         deltat_global = tfinal - tinit_global        
         self.total_time = deltat_global        
