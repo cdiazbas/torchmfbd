@@ -43,7 +43,7 @@ if __name__ == '__main__':
                 
     decSI.deconvolve(infer_object=False, 
                      optimizer='lbfgs', 
-                     simultaneous_sequences=90,
+                     simultaneous_sequences=frames_patches.shape[0],     # all patches (65 here) in one batch, for the coupling of kl.yaml
                      n_iterations=10)
             
     obj = []

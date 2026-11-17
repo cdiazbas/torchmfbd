@@ -66,7 +66,7 @@ if __name__ == '__main__':
     
     decSI.deconvolve(infer_object=False, 
                      optimizer='adam', 
-                     simultaneous_sequences=100,     # all 65 patches in one batch, for the coupling of kl.yaml
+                     simultaneous_sequences=frames_patches.shape[0],     # all patches (169 here) in one batch, for the coupling of kl.yaml
                      n_iterations=100)
         
     # modes = decSI.modes.cpu().numpy()

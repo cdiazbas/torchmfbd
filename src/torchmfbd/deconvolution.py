@@ -1312,8 +1312,9 @@ class Deconvolution(object):
     def s_u_joint_value(self, obj):
         """
         The configured s_u_joint of an object, a number or 'auto'. With 'auto' the level follows the data:
-        250 (sigma / 0.02) max(12 / N, 1), with sigma the noise estimate of the frames (mean over frames and sequences,
-        in units of the frames divided by their mean) and N the frames per sequence. Measured on the benchmark with
+        250 (sigma / mu / 0.02) max(12 / N, 1) mu^2, with sigma the noise estimate of the frames (mean over frames and
+        sequences), mu the mean of the frames and N the frames per sequence; for frames divided by their mean (mu = 1)
+        it is 250 (sigma / 0.02) max(12 / N, 1). Measured on the benchmark with
         96- and 128-px patches: the best fixed level grows linearly with the noise and with 12/N, and this rule lands
         on it; with 6 frames it turns a loss into a gain. With 64-px patches it makes the object worse. Above 12 frames
         frames_prior_scale applies 12/N on top, as for a fixed value.
@@ -1325,7 +1326,10 @@ class Deconvolution(object):
             raise ValueError(f"object{obj+1}.s_u_joint: auto needs the frames: call add_frames before deconvolve")
         sigma = float(torch.mean(torch.as_tensor(self.sigma[obj], dtype=torch.float32)))
         n_frames = self.frames[obj].shape[1]
-        return 250.0 * (sigma / 0.02) * max(12.0 / n_frames, 1.0)
+        # Scale-free: the rule was measured on frames divided by their mean (mu = 1). For frames in other units the
+        # noise is taken relative to the mean and the level, an object power, scales with mu^2
+        mu = float(torch.mean(self.frames[obj]))
+        return 250.0 * (sigma / mu / 0.02) * max(12.0 / n_frames, 1.0) * mu**2
 
     def frames_prior_scale(self, obj):
         """

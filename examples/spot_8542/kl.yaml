@@ -35,8 +35,8 @@ optimization:
     lr_prior : 0.08
     # Joint loss with the prior level from the noise (s_u_joint: auto) and the coupling of neighbouring patches below.
     # Against the marginal loss on the benchmark (128-px patches, stride 32, LBFGS 10; benchmarks/run.py): object error
-    # 10.6 % lower on 55 scenes with 6 frames (43 better, none >25 % worse), 11.5 % lower on 42 scenes with neighbours
-    # at 12 frames (35 better; real sunspot crops and two-layer seeing), 20.3 % lower on 13 one-patch synthetic scenes;
+    # 10.6 % lower on 55 scenes with 6 frames (43 better, none >25 % worse), 11.1 % lower on 42 scenes with neighbours
+    # at 12 frames (33 better; real sunspot crops and two-layer seeing), 20.3 % lower on 13 one-patch synthetic scenes;
     # each the mean of the per-scene changes.
     loss_type: joint
     # Marginal loss only (ignored with joint): the PSD parameters stop being fitted once more than 20 modes are active,
