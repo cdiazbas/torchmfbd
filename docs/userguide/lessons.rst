@@ -33,6 +33,34 @@ Patch size and stride
   against −20.7 % for 128 pixels (joint loss, fixed prior).
 
 
+The example as it ships: joint loss, ``s_u_joint: auto`` and patch coupling
+---------------------------------------------------------------------------
+
+``examples/spot_8542`` uses the joint loss with the object prior level taken from the noise (``s_u_joint: auto``) and
+the ``coupling`` regularization (``lambda`` 30, ``n_modes`` 10), which pulls together the low-order wavefront
+coefficients of neighbouring patches. Against the marginal loss it used before (128-pixel patches, stride 32,
+LBFGS 10; each number is the mean of the per-scene changes):
+
+* 42 scenes with neighbouring patches (real sunspot crops and two-layer seeing), the example as shipped: object
+  error 11.1 % lower, 33 better (sign test p = 0.0003), none more than 25 % worse; with seeing that changes across
+  the field, real crops −20.0 %;
+* 55 scenes with 6 frames: −10.6 %, 43 better, none more than 25 % worse;
+* 13 synthetic one-patch scenes: −20.3 % (13 of 13).
+
+The last two were measured with the same three settings given on the command line of ``benchmarks/run.py``, before
+the example's configuration was changed.
+
+All three parts are needed:
+
+* The coupling with the marginal loss gives nothing measurable (−1.4 %, inside its ±8 % spread).
+* The joint loss with the coupling but a fixed prior level fails on 6-frame bursts (6 real scenes more than 25 %
+  worse); ``s_u_joint: auto`` prevents it.
+* The coupling needs all patches of an image in one batch (``simultaneous_sequences`` at least the number of
+  patches) and the pairs of neighbours (``set_neighbours(patchify.neighbours())``), as the example scripts do.
+* The coupling does not rescue a stride of 64: with the marginal loss it is 23.5 % worse than a stride of 32, and a
+  coupling of 100 does not change that.
+
+
 Object filter: ``scharmer`` or ``garrote``
 ------------------------------------------
 
@@ -44,6 +72,7 @@ Measured with the joint loss only.
   ``garrote``, both relative to 64-pixel patches with ``scharmer``. It is also better when the true PSFs are given
   (0.121 against 0.124), so the difference is the filter, not the fit. The default stays ``scharmer``.
 * With 6 frames and 64-pixel patches ``garrote`` makes no difference (−0.7 %).
+* On top of the example's coupling (128-pixel patches) ``garrote`` is slightly worse (+1.5 %).
 * ``garrote`` changes the object smoothly when the data change slightly; the ``scharmer`` mask switches frequencies
   on or off, and a change of one part in :math:`10^4` in the frames can make the object jump.
 
@@ -60,10 +89,12 @@ What cannot be recovered
 The marginal loss: when to stop fitting the object spectrum
 ------------------------------------------------------------
 
+The example now uses the joint loss; this applies when the marginal loss is chosen.
+
 * ``stop_psd_optimization`` freezes the parameters of the object power spectrum after that many modes have been
   added. Freezing early gives PSFs that are too narrow; fitting to the end (as the code did before it honoured the
   option) gives PSFs that are too broad.
-* With the example as it ships (128-pixel patches, stride 32, border 24), any early stop beats fitting to the end.
+* With 128-pixel patches (stride 32, border 24), any early stop beats fitting to the end.
   At the shipped value of 20 the object error drops from 0.315 to 0.251 and the PSF transfer error from 0.274 to
   0.226 (12 of 13 synthetic scenes better); with the seeing changing across the field, 0.338 → 0.263 (12 of 12).
   Stopping at 5 or 14 gives about the same (0.230 and 0.233 on the synthetic set): the differences between the three
@@ -76,7 +107,8 @@ The joint loss: level of the object prior
 -----------------------------------------
 
 * With 96- and 128-pixel patches the best ``s_u_joint`` grows linearly with the noise and with the inverse of the
-  number of frames: about :math:`250\,(\sigma/0.02)\,(12/N)` (measured at 96 pixels, checked at 128).
+  number of frames: about :math:`250\,(\sigma/0.02)\,(12/N)` for frames divided by their mean (measured at 96
+  pixels, checked at 128). ``s_u_joint: auto`` applies this rule.
 * With 64-pixel patches do not apply that rule: it makes the object worse than the fixed ``s_u_joint = 250``
   (+6.5 % in standard conditions, +9.2 % with 6 frames, +57 % with twice the noise; 31 scenes).
 
@@ -87,7 +119,9 @@ The optimizer
 * LBFGS amplifies tiny changes: a change of one part in :math:`10^7` in the frames changes the object by 32 to 35 %
   (Adam: by :math:`10^{-6}`). The same configuration run on another machine gives a different result: the PSF error
   of one scene differed by up to 0.24 between a Mac and a Linux CPU, and by 3 to 4 % between two GPU types (V100S and
-  T4). **Compare configurations only on the same machine**, and over many scenes.
+  T4). **Compare configurations only on the same machine**, and over many scenes. Two starts of the same
+  configuration differ by about ±8 % per scene with the marginal loss and ±2.5 % with the joint loss: a difference
+  smaller than that, scene by scene, is not a result.
 
 
 Time series (``filter_loss: wiener_time``)
@@ -99,6 +133,11 @@ Time series (``filter_loss: wiener_time``)
 * ``regularization.time.mask_window`` (default 3) computes the ``scharmer`` mask, or the ``garrote`` gain, of each
   step from the step and its neighbours. With 1, a badly degraded step keeps an error of 0.72; with 3 it comes back to
   the error of a clean step (0.19).
+* With seeing that changes across the field and an evolving scene (6 synthetic scenes of 4 steps, 128-pixel
+  patches, the example's joint loss), the time term is the large gain: −31.8 % at a weight of 1.5e-4 (6 of 6). The
+  coupling adds about 4 % on top at that weight (−3.9 %, 5 of 6, with the second layer at 5 km; −3.8 %, 6 of 6, at
+  15 km), and nothing without the time term or with a weight of 5e-4, which is itself 1.5 % worse than 1.5e-4. The
+  coupling acts within each time step, never across steps.
 * With the best weight of the time term the first and last steps improve less than the middle ones, because they have
   one neighbour. Penalizing the curvature of the time evolution instead of the difference between steps does not
   change this (mean error 0.224 → 0.219) and makes a series with one bad step worse (0.202 → 0.214).
@@ -125,8 +164,8 @@ Tried and not adopted
 * **Restricting the wavefront to the directions the data determine** (``psf.nullspace_d_r0``, with
   ``psf.nullspace_threshold``; experimental, off by default, see :ref:`configuration`): it helps synthetic scenes
   (mean error 0.265 → 0.235 over 13 scenes, −11 %) but makes the real sunspot worse at D/r0 5 (+9 %, 6 of 6 scenes),
-  with worse PSFs in 3 of 4 groups (64-pixel patches, joint loss). Leave it off unless your data are tested with
-  ``benchmarks/``.
+  with worse PSFs in 3 of 4 groups (64-pixel patches, joint loss). With 128-pixel patches it is worse still on the
+  real scenes (+14 %). Leave it off unless your data are tested with ``benchmarks/``.
 * A power-law object spectrum in the joint loss instead of the constant ``s_u_joint``: at best it ties the constant
   (0.268 against 0.267, better in 7 of 13 synthetic scenes); every other variant is worse (0.29 to 0.45) and gives
   worse PSFs.
