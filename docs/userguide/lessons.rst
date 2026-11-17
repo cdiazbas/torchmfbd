@@ -63,10 +63,13 @@ The marginal loss: when to stop fitting the object spectrum
 * ``stop_psd_optimization`` freezes the parameters of the object power spectrum after that many modes have been
   added. Freezing early gives PSFs that are too narrow; fitting to the end (as the code did before it honoured the
   option) gives PSFs that are too broad.
-* Stopping halfway, at 20 modes (5 of the 10 outer steps of the example), was better than fitting to the end in 11
-  of 13 synthetic scenes: object error 0.455 → 0.304, PSF error 0.465 → 0.439 (64-pixel patches).
-
-.. TODO(check): repeat the stop_psd_optimization sweep with 128-pixel patches before stating it for the new example.
+* With the example as it ships (128-pixel patches, stride 32, border 24), any early stop beats fitting to the end.
+  At the shipped value of 20 the object error drops from 0.315 to 0.251 and the PSF transfer error from 0.274 to
+  0.226 (12 of 13 synthetic scenes better); with the seeing changing across the field, 0.338 → 0.263 (12 of 12).
+  Stopping at 5 or 14 gives about the same (0.230 and 0.233 on the synthetic set): the differences between the three
+  are within the run-to-run spread of these sets (±8.6 %), so there is no reason to move from 20.
+* With 64-pixel patches the result was the same: stopping at 20 was better than fitting to the end in 11 of 13
+  synthetic scenes (object error 0.455 → 0.304, PSF error 0.465 → 0.439).
 
 
 The joint loss: level of the object prior
@@ -112,7 +115,8 @@ Judging a result without a truth
   And with 64-pixel patches, fitting longer lowers the loss while the object gets worse.
 * For PSFs, the error of each frame's :math:`|{\rm OTF}|` does not predict how good the object will be (rank
   correlation −0.18); the transfer error :math:`R = \sum \hat T^* T / \sum |\hat T|^2` does (+0.71 on real crops,
-  +0.88 on synthetic scenes), and is the one ``benchmarks/`` reports.
+  +0.88 on synthetic scenes), and is the one ``benchmarks/`` reports. When the marginal fit runs to the end, for
+  instance, the per-frame error is at its lowest while the object and the transfer error are at their worst.
 
 
 Tried and not adopted
