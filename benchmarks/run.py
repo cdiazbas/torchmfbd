@@ -41,6 +41,10 @@ def fit_scene(sc, base, a):
     conf["optimization"]["gpu"] = a.gpu
     if a.coupling:                                # wavefronts of neighbouring patches coupled (regularization coupling)
         conf["regularization"] = dict(conf.get("regularization") or {}, coupling={"lambda": a.coupling, "n_modes": a.coupling_modes})
+    if a.filter:
+        conf["object1"]["image_filter"] = a.filter
+    if a.nullspace:                               # experimental wavefront restriction (joint loss only)
+        conf["psf"]["nullspace_d_r0"] = a.nullspace
     if a.seed:                                    # the wavefront starts at zero: another seed only matters with a
         conf.setdefault("initialization", {})["modes_std"] = 1e-3   # random start (1e-3 rad rms), as for the floor
     P4 = torchmfbd.Patchify4D()
@@ -51,6 +55,9 @@ def fit_scene(sc, base, a):
     t0 = time.time()
     d = torchmfbd.Deconvolution(conf); d.logger.setLevel(logging.ERROR)
     d.add_frames(pt, id_object=0, id_diversity=0, diversity=0.0)
+    if a.su_rule:                                 # joint loss: object prior level from the noise, 250 (sigma/0.02)(12/N)
+        sig = float(torch.mean(d.sigma[0])); nfr = d.frames[0].shape[1]
+        d.config["object1"]["s_u_joint"] = 250.0 * (sig / 0.02) * max(12.0 / nfr, 1.0)
     if a.coupling:
         d.set_neighbours(P4.neighbours())
     d.deconvolve(infer_object=False, optimizer=a.optimizer, simultaneous_sequences=10000, n_iterations=a.iterations)
@@ -141,11 +148,11 @@ def compare(a_path, b_path, floor_path=None):
     print(f"a = {a_path}\nb = {b_path}\ndevice {A['info']['device']}" + (f"; noise floor +-{floor:.1f} % (|a - a, other seed|)" if floor is not None else ""))
     for g, sc in groups.items():
         ch = np.array([100 * (rb[s]["err_obj"] / ra[s]["err_obj"] - 1) for s in sc])
-        w = int((ch < 0).sum())
+        w, l = int((ch < 0).sum()), int((ch > 0).sum())             # ties (identical fits) carry no sign
         ba = np.mean([ra[s]["band_err"] for s in sc], axis=0); bb = np.mean([rb[s]["band_err"] for s in sc], axis=0)
         verdict = "" if floor is None else ("  beyond the noise floor" if abs(ch.mean()) > floor else "  within the noise floor")
         print(f"{g:12s} n={len(sc):3d}  object {np.mean([ra[s]['err_obj'] for s in sc]):.4f} -> {np.mean([rb[s]['err_obj'] for s in sc]):.4f}"
-              f"  change {ch.mean():+6.1f} %  b better in {w}/{len(sc)}  sign p={sign_p(w, len(sc)):.2g}"
+              f"  change {ch.mean():+6.1f} %  b better in {w}/{len(sc)} (ties {len(sc) - w - l})  sign p={sign_p(w, w + l) if w + l else 1.0:.2g}"
               f"  R {np.mean([ra[s]['err_transfer'] for s in sc]):.3f} -> {np.mean([rb[s]['err_transfer'] for s in sc]):.3f}"
               f"  >25 % worse: {int((ch > 25).sum())}{verdict}")
         print(f"{'':12s} band error " + "  ".join(f"{lo:.2f}-{hi:.2f}: {x:.2f}->{y:.2f}" for (lo, hi), x, y in zip(M.BANDS, ba, bb)))
@@ -163,6 +170,9 @@ def main():
     p.add_argument("--optimizer", default="lbfgs"); p.add_argument("--iterations", type=int, default=10)
     p.add_argument("--coupling", type=float, default=0.0, help="lambda of the coupling of neighbouring patches (0: off)")
     p.add_argument("--coupling-modes", type=int, default=10)
+    p.add_argument("--filter", choices=["scharmer", "garrote", "tophat"], help="object filter (default: the yaml's)")
+    p.add_argument("--su-rule", action="store_true", help="joint loss: s_u_joint = 250 (sigma/0.02)(12/N) from the data")
+    p.add_argument("--nullspace", type=float, default=0.0, help="D/r0 of the experimental wavefront restriction (0: off)")
     p.add_argument("--frames", type=int, default=12); p.add_argument("--noise", type=float, default=0.02)
     p.add_argument("--alt", type=float, default=5000.0, help="height of the upper seeing layer of the aniso sets, m")
     p.add_argument("--seed", type=int, default=0, help="seed of the initial wavefront (another seed gives the noise floor)")
