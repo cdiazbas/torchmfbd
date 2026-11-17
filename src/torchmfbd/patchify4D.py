@@ -85,7 +85,27 @@ class Patchify4D(object):
             return a, torch.cat([patchX, patchY], dim=-1)
         else:
             return a
-    
+
+    def neighbours(self):
+        """
+        Pairs of adjacent patches of the last patchify call, as indices of the flattened sequences it returned (one
+        stride apart in x or in y, within the same image). Pass them to Deconvolution.set_neighbours to couple the
+        wavefronts of neighbouring patches (regularization `coupling`). Requires flatten_sequences=True.
+        """
+        if not self.flatten_sequences:
+            raise ValueError("neighbours() needs the patches of a patchify call with flatten_sequences=True")
+        pairs = []
+        for b in range(self.n_batch):
+            base = b * self.n_patches
+            for r in range(self.Lx):
+                for c in range(self.Ly):
+                    p = base + r * self.Ly + c
+                    if c + 1 < self.Ly:
+                        pairs.append((p, p + 1))
+                    if r + 1 < self.Lx:
+                        pairs.append((p, p + self.Ly))
+        return pairs
+
     def unpatchify(self, x, apodization=0, weight_type=None, weight_params=None):
         """
         Reconstructs the original image from patches. Works seamlessly if x has

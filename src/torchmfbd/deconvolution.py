@@ -255,6 +255,10 @@ class Deconvolution(object):
         self.nullspace_threshold = float(self.config['psf'].get('nullspace_threshold', 1.0))
         self.nullspace_P_seq = None
         self.nullspace_P_batch = None
+        # Pairs of neighbouring sequences (patches) for the coupling regularization (set_neighbours), and the pairs of
+        # the batch being fitted, as positions in the batch
+        self.coupling_pairs = None
+        self.coupling_E_batch = None
         self.kl_variance = None
 
         if self.remove_tt:
@@ -592,14 +596,22 @@ class Deconvolution(object):
         # lambda_t of filter_loss wiener_time*; 0 unless a `time` entry sets it (lambda = 0 is a valid control run)
         # The type of a regularization is the prefix of its key: smooth*, iuwt*, time*
         def kind(k):
-            for prefix in ('smooth', 'iuwt', 'time'):
+            for prefix in ('smooth', 'iuwt', 'time', 'coupling'):
                 if k.startswith(prefix):
                     return prefix
-            raise ValueError(f"Unknown regularization '{k}': the key must start with smooth, iuwt or time")
+            raise ValueError(f"Unknown regularization '{k}': the key must start with smooth, iuwt, time or coupling")
 
         self.time_regularization = 0.0
         self.time_mask_window = 3
+        # Coupling of the wavefronts of neighbouring patches (needs set_neighbours); 0 unless a `coupling` entry sets it
+        self.coupling_lambda = 0.0
+        self.coupling_modes = 10
         for k, v in self.config['regularization'].items():
+            if kind(k) == 'coupling':
+                self.coupling_lambda = float(v['lambda'])
+                self.coupling_modes = int(v.get('n_modes', 10))
+                if self.coupling_lambda < 0 or self.coupling_modes < 1:
+                    raise ValueError(f"regularization.{k} needs lambda >= 0 and n_modes >= 1")
             if kind(k) == 'time':
                 self.time_regularization = float(v['lambda'])
                 self.time_mask_window = int(v.get('mask_window', 3))
@@ -613,7 +625,7 @@ class Deconvolution(object):
                     tmp = RegularizationSmooth(lambda_reg=v['lambda'], variable=v['variable'])
                 if kind(k) == 'iuwt':
                     tmp = RegularizationIUWT(lambda_reg=v['lambda'], variable=v['variable'], nbands=v['nbands'], n_pixel=self.npix)
-                if kind(k) != 'time':
+                if kind(k) not in ('time', 'coupling'):
                     self.regularization.append(tmp.to(self.device))
                     self.index_regularization[v['variable']].append(loop)
                     tmp.print()
@@ -625,6 +637,23 @@ class Deconvolution(object):
             self.index_regularization[reg.variable].append(loop)
             reg.print()
             loop += 1
+
+    def set_neighbours(self, pairs):
+        """
+        Declare which sequences are neighbouring patches of the same field, for the `coupling` regularization:
+        lambda * sum over the pairs (p, q) and the frames of ||theta_p - theta_q||^2 over the first n_modes wavefront
+        coefficients (tip-tilt referred to the first frame), in the normalisation of the joint loss (divided by the
+        number of sequences of the batch and by (n_pixel - 1)^2). Neighbouring patches see almost the same low-order
+        seeing; the term lets them differ where the data ask for it.
+
+        Parameters
+        ----------
+        pairs : list of (int, int)
+            Indices of the sequences as added with add_frames (with flatten_sequences=True), e.g. Patchify4D.neighbours().
+            Only pairs whose two patches are fitted in the same batch are coupled: give simultaneous_sequences at least
+            the number of patches.
+        """
+        self.coupling_pairs = [(int(p), int(q)) for p, q in pairs]
 
     def add_external_regularizations(self, external_regularization):        
         """
@@ -2693,6 +2722,20 @@ class Deconvolution(object):
 
             # Restriction of the wavefront of this batch, if a first pass computed one
             self.nullspace_P_batch = self.nullspace_P_seq[i_seq].to(self.device) if self.nullspace_P_seq is not None else None
+
+            # Neighbouring patches of this batch, as positions in the batch, for the coupling regularization
+            self.coupling_E_batch = None
+            if self.coupling_lambda > 0 and self.coupling_pairs is not None and self.psf_model.lower() in ['zernike', 'kl']:
+                if self.n_t > 1:
+                    raise ValueError("regularization coupling is not available with a time dimension")
+                pos = {int(g): k for k, g in enumerate(seq)}
+                E = [(pos[p], pos[q]) for p, q in self.coupling_pairs if p in pos and q in pos]
+                n_cut = sum((p in pos) != (q in pos) for p, q in self.coupling_pairs)
+                if n_cut:
+                    self.logger.warning(f"coupling: {n_cut} pairs of neighbours fall in different batches and are not coupled; "
+                                        f"raise simultaneous_sequences to fit all patches together")
+                if E:
+                    self.coupling_E_batch = torch.tensor(E, dtype=torch.long, device=self.device)
             
             if i_seq == 0:
                 label_time = ''
@@ -3032,6 +3075,14 @@ class Deconvolution(object):
                         # modes -> (n_seq, n_f, self.n_modes)
                         # jitter > (n_seq, n_f, 3)                                                
                         psf, otf = self.compute_psfs(modes_centered[..., 0:n_active], diversity_seq, jitter=jitter_torch if self.use_jitter != 'none' else None)
+
+                    # Coupling of neighbouring patches: lambda sum_pairs,frames ||theta_p - theta_q||^2 over the first
+                    # coupling_modes active coefficients, normalised as the joint loss (sequences x (npix - 1)^2)
+                    loss_coupling = None
+                    if self.coupling_E_batch is not None:
+                        m = modes_centered[..., 0:min(self.coupling_modes, n_active)]
+                        E = self.coupling_E_batch
+                        loss_coupling = self.coupling_lambda * torch.sum((m[E[:, 0]] - m[E[:, 1]])**2) / (m.shape[0] * (self.npix - 1)**2)
                     
                     if self.psf_model.lower() == 'nmf':
                         psf, otf = self.compute_psfs_nmf(modes[..., 0:n_active])
@@ -3088,6 +3139,9 @@ class Deconvolution(object):
                                                                         pars_s0=pars_s0_arg, 
                                                                         pars_s2=pars_s2_arg,
                                                                         jitter=jitter_torch if self.use_jitter != 'none' else None)
+
+                    if loss_coupling is not None:
+                        loss = loss + loss_coupling
 
                     # If MOMFBD is used, then the object cannot be regularized. Look for alternatives for the future
                     # Object regularization
@@ -3313,6 +3367,7 @@ class Deconvolution(object):
             # del psf, degraded, obj_filter, obj_filter_diffraction, degraded_ft, obj_ft, obj_filter_ft, otf
         
         self.nullspace_P_batch = None
+        self.coupling_E_batch = None
 
         deltat = tfinal - tinit
         deltat_global = tfinal - tinit_global        

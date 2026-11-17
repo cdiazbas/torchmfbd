@@ -118,6 +118,10 @@ Different regularizations can be used simultaneously. Current options are ``smoo
     * ``lambda`` : weight of the squared difference between consecutive time steps, for 64-pixel patches and 12 frames per time step; it is scaled internally so that the same value means the same smoothing for any patch size and number of frames
     * ``mask_window`` : number of consecutive time steps (odd, default 3) from which the ``scharmer`` mask or the ``garrote`` gain of each step is computed. With 1 each step uses only its own frames, and a much noisier step then loses what the time term brings from its neighbours
 
+* ``coupling`` : couples the wavefronts of neighbouring patches. Neighbouring patches see almost the same low-order seeing, so the loss gets ``lambda`` times the sum over pairs of neighbours and frames of the squared differences of their first ``n_modes`` wavefront coefficients (tip-tilt referred to the first frame), normalised like the joint loss. The patches may still differ where the data ask for it. It needs the pairs of neighbours, given with ``Deconvolution.set_neighbours(patchify.neighbours())`` after ``Patchify4D.patchify``, and all patches fitted in one batch (``simultaneous_sequences`` at least the number of patches); only for the ``kl`` and ``zernike`` models and without a time dimension. Absent by default. The parameters are:
+    * ``lambda`` : weight of the term. 30 with stride 32 and 100 with stride 64 were the best values measured: neighbours further apart need a stronger coupling
+    * ``n_modes`` : number of wavefront coefficients coupled (default 10). Coupling 20 instead of 10 did not change the result
+
 psf
 ^^^
 * ``model`` : model to be used for the PSF. Options are ``kl`` (which uses Karhunen-Loeve modes) or ``zernike`` (which uses Zernike modes)

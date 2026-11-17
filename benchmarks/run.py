@@ -39,6 +39,8 @@ def fit_scene(sc, base, a):
     if a.loss:
         conf["optimization"]["loss_type"] = a.loss
     conf["optimization"]["gpu"] = a.gpu
+    if a.coupling:                                # wavefronts of neighbouring patches coupled (regularization coupling)
+        conf["regularization"] = dict(conf.get("regularization") or {}, coupling={"lambda": a.coupling, "n_modes": a.coupling_modes})
     if a.seed:                                    # the wavefront starts at zero: another seed only matters with a
         conf.setdefault("initialization", {})["modes_std"] = 1e-3   # random start (1e-3 rad rms), as for the floor
     P4 = torchmfbd.Patchify4D()
@@ -49,6 +51,8 @@ def fit_scene(sc, base, a):
     t0 = time.time()
     d = torchmfbd.Deconvolution(conf); d.logger.setLevel(logging.ERROR)
     d.add_frames(pt, id_object=0, id_diversity=0, diversity=0.0)
+    if a.coupling:
+        d.set_neighbours(P4.neighbours())
     d.deconvolve(infer_object=False, optimizer=a.optimizer, simultaneous_sequences=10000, n_iterations=a.iterations)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -157,6 +161,8 @@ def main():
     p.add_argument("--border", type=int, help="apodization border (default: the yaml's)")
     p.add_argument("--loss", choices=["joint", "marginal"], help="default: the yaml's")
     p.add_argument("--optimizer", default="lbfgs"); p.add_argument("--iterations", type=int, default=10)
+    p.add_argument("--coupling", type=float, default=0.0, help="lambda of the coupling of neighbouring patches (0: off)")
+    p.add_argument("--coupling-modes", type=int, default=10)
     p.add_argument("--frames", type=int, default=12); p.add_argument("--noise", type=float, default=0.02)
     p.add_argument("--alt", type=float, default=5000.0, help="height of the upper seeing layer of the aniso sets, m")
     p.add_argument("--seed", type=int, default=0, help="seed of the initial wavefront (another seed gives the noise floor)")
