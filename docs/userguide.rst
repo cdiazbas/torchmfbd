@@ -13,4 +13,5 @@ User guide
    userguide/patches   
    userguide/destretch
    userguide/regularization
+   userguide/lessons
    userguide/movie
