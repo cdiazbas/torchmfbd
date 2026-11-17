@@ -59,8 +59,7 @@ def fit_scene(sc, base, a):
     if a.su_rule:                                 # joint loss: object prior level from the noise, 250 (sigma/0.02)(12/N)
         sig = float(torch.mean(d.sigma[0])); nfr = d.frames[0].shape[1]
         d.config["object1"]["s_u_joint"] = 250.0 * (sig / 0.02) * max(12.0 / nfr, 1.0)
-    if a.coupling:
-        d.set_neighbours(P4.neighbours())
+    d.set_neighbours(P4.neighbours())             # used only if the configuration couples neighbouring patches
     d.deconvolve(infer_object=False, optimizer=a.optimizer, simultaneous_sequences=10000, n_iterations=a.iterations)
     if torch.cuda.is_available():
         torch.cuda.synchronize()

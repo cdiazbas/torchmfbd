@@ -39,6 +39,7 @@ if __name__ == '__main__':
     for i in range(2):        
         frames_patches = patchify.patchify(frames[:, i, :, :, :], patch_size=128, stride_size=32, flatten_sequences=True)   # n_pixel of kl.yaml
         decSI.add_frames(frames_patches, id_object=i, id_diversity=0, diversity=0.0)
+    decSI.set_neighbours(patchify.neighbours())          # for the coupling regularization of kl.yaml
                 
     decSI.deconvolve(infer_object=False, 
                      optimizer='lbfgs', 

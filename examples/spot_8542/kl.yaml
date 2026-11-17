@@ -17,13 +17,14 @@ object1:
     wavelength : 8542.0
     image_filter: scharmer
     cutoff : [0.95, 0.99]
-    s_u_joint: 250.0
+    # object prior level from the noise of the frames and their number (joint loss): 250 (sigma/0.02) max(12/N, 1)
+    s_u_joint: auto
 
 object2:
     wavelength : 8542.0
     image_filter: scharmer
     cutoff : [0.95, 0.99]
-    s_u_joint: 250.0
+    s_u_joint: auto
     
 optimization:
     gpu : 0
@@ -32,15 +33,23 @@ optimization:
     lr_obj : 0.00
     lr_modes : 0.08
     lr_prior : 0.08
-    loss_type: marginal
-    # The PSD parameters stop being fitted once more than 20 modes are active: with the linear annealing below and
-    # LBFGS 10 (spot_8542_kl_patches.py), after 5 of the 10 steps. The longer they are fitted, the broader the
-    # fitted PSFs. On synthetic bursts with a known truth this gives a better object and better PSFs than fitting
-    # them throughout; 5 gives a slightly better object with PSFs that come out too narrow.
+    # Joint loss with the prior level from the noise (s_u_joint: auto) and the coupling of neighbouring patches below.
+    # Against the marginal loss on the benchmark (128-px patches, stride 32, LBFGS 10; benchmarks/run.py): object error
+    # 10.6 % lower on 55 scenes with 6 frames (43 better, none >25 % worse), 11.5 % lower on 42 scenes with neighbours
+    # at 12 frames (35 better; real sunspot crops and two-layer seeing), 20.3 % lower on 13 one-patch synthetic scenes;
+    # each the mean of the per-scene changes.
+    loss_type: joint
+    # Marginal loss only (ignored with joint): the PSD parameters stop being fitted once more than 20 modes are active,
+    # after 5 of the 10 LBFGS steps. Fitting them throughout gives broader PSFs and a worse object.
     stop_psd_optimization: 20
     show_object_info: False
 
 regularization:
+     # Neighbouring patches see almost the same low-order seeing: their first 10 wavefront coefficients are pulled
+     # together (needs set_neighbours in the script and all patches in one batch). Weight 30 for stride 32
+     coupling:
+        lambda : 30.0
+        n_modes : 10
      iuwt1:
         variable : object
         lambda : 0.00

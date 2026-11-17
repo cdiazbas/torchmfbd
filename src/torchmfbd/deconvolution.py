@@ -2745,6 +2745,8 @@ class Deconvolution(object):
 
             # Neighbouring patches of this batch, as positions in the batch, for the coupling regularization
             self.coupling_E_batch = None
+            if i_seq == 0 and self.coupling_lambda > 0 and self.coupling_pairs is None:
+                self.logger.warning("regularization coupling is set but no neighbours were given (set_neighbours): no coupling")
             if self.coupling_lambda > 0 and self.coupling_pairs is not None and self.psf_model.lower() in ['zernike', 'kl']:
                 if self.n_t > 1:
                     raise ValueError("regularization coupling is not available with a time dimension")
