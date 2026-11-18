@@ -16,11 +16,14 @@ Sets:
   aniso-real   12 such crops with the two-layer seeing of aniso-synth. Needs the burst file.
   aniso-time   6 synthetic 256-px scenes evolving over 4 time steps, each step with its own two-layer seeing, for the
                time path (filter_loss wiener_time). Needs nothing.
+  real-time    as aniso-time, with the real solar evolution of the SST/CRISP 8542 time sequence: 3 windows of 4
+               steps, D/r0 5 and 10. Needs the sequence file.
 Hold-out (holdout=True, run.py --holdout): every seed shifted by HOLDOUT, names ending in _h. Synthetic objects, seeing,
 motion and noise all change; the real sets keep their crops of the burst and change the seeing, motion and noise. Use
 them to confirm a choice made on the default scenes.
-The burst file is spot_20200727_083509_8542_npix512_original.h5, the data of examples/spot_8542 (not in the repository;
-see README.md for where to get it).
+The burst file is spot_20200727_083509_8542_npix512_original.h5, the data of examples/spot_8542, and the sequence file
+sequence_8542_npix256_aligned.h5, the data of examples/spot_8542_time (neither is in the repository; see README.md for
+where to get them).
 """
 import numpy as np
 
@@ -146,6 +149,46 @@ def time_scenes(n_frames=12, noise=0.02, alt=5000.0, n_steps=4, evolve=0.3, hold
                        shifts=shifts, time=True)
 
 
+def _sharp(x):
+    gy, gx = np.gradient(x)
+    return np.sqrt(np.mean(gx**2 + gy**2)) / x.mean()
+
+
+def real_time_scenes(seq_path, n_frames=12, noise=0.02, alt=5000.0, n_steps=4, n_windows=3, holdout=False):
+    """Set real-time: the solar evolution of the SST/CRISP 8542 time sequence (49 steps of 12 frames, 256 px). The truth
+    of a step is its sharpest wide-band frame, which keeps its own residual seeing and noise. The windows are the
+    n_windows non-overlapping runs of n_steps consecutive steps whose least sharp truth is sharpest, so that a change of
+    the residual seeing between steps is not taken for solar evolution. Each step is extended to 384 px by reflection
+    (the scene outside the field is its mirror image; the forward model stays exact) and gets its own two-layer seeing
+    (D/r0 5 and 10, upper layer at `alt`). Scenes as in aniso-time."""
+    import h5py
+    with h5py.File(seq_path, "r") as f:
+        im = f["im"][:, 0].astype("float64")
+    gt = []
+    for t in range(im.shape[0]):
+        b = im[t, int(np.argmax([_sharp(x[32:-32, 32:-32]) for x in im[t]]))]
+        gt.append(b / b.mean())
+    s = np.array([_sharp(g[32:-32, 32:-32]) for g in gt])
+    worst = np.array([s[t:t + n_steps].min() for t in range(len(gt) - n_steps + 1)])
+    starts = []
+    for t in np.argsort(-worst):
+        if all(abs(int(t) - u) >= n_steps for u in starts):
+            starts.append(int(t))
+        if len(starts) == n_windows:
+            break
+    for d_r0 in (5.0, 10.0):
+        for w, t0 in enumerate(sorted(starts)):
+            rng = np.random.default_rng(9000 + 100 * int(d_r0) + w + (HOLDOUT if holdout else 0))
+            frames, truths, psf_at, shifts = [], [], [], []
+            for t in range(t0, t0 + n_steps):
+                g384 = np.pad(gt[t], 64, mode="reflect")
+                f, p, sh = _degrade_aniso(g384, rng, n_frames, noise, d_r0, alt)
+                frames.append(f); psf_at.append(p); shifts.append(sh)
+                truths.append(g384[64:320, 64:320] / f.mean())
+            yield dict(name=f"rtime_r0{d_r0:g}_t{t0}" + ("_h" if holdout else ""), frames=np.array(frames), truth=np.array(truths),
+                       psf_at=psf_at, shifts=shifts, time=True)
+
+
 def _burst_truth(h5_path):
     import h5py
     with h5py.File(h5_path, "r") as f:
@@ -156,8 +199,13 @@ def _burst_truth(h5_path):
     return gt / gt.mean()
 
 
-def scene_set(name, n_frames=12, noise=0.02, alt=5000.0, h5_path=None, holdout=False):
+def scene_set(name, n_frames=12, noise=0.02, alt=5000.0, h5_path=None, holdout=False, seq_path=None):
     """The scenes of one set (see the module docstring), generated one at a time."""
+    if name == "real-time":
+        if seq_path is None:
+            raise FileNotFoundError("the real-time scenes need the time sequence: pass --seq (see benchmarks/README.md)")
+        yield from real_time_scenes(seq_path, n_frames, noise, alt, holdout=holdout)
+        return
     if name == "synth":
         for seed in range(13):
             yield synthetic(seed, n_frames, noise, holdout=holdout)

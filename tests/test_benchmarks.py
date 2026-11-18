@@ -81,3 +81,23 @@ def test_holdout_scenes_differ():
     assert h["name"] == a["name"] + "_h"
     assert not np.array_equal(a["frames"], h["frames"])
     assert np.array_equal(h["frames"], S.synthetic(3, n_frames=2, holdout=True)["frames"])
+
+
+def test_real_time_scenes(tmp_path):
+    import h5py
+    rng = np.random.default_rng(0)
+    im = 1 + 0.1 * rng.standard_normal((9, 2, 2, 256, 256))
+    im[:, 0, 1] += 0.2 * rng.standard_normal((9, 256, 256))      # frame 1 of every step is the sharpest
+    p = tmp_path / "seq.h5"
+    with h5py.File(p, "w") as f:
+        f["im"] = im
+    sc = list(S.real_time_scenes(str(p), n_frames=2, n_windows=2))
+    assert len(sc) == 4 and all(s["time"] for s in sc)                     # 2 windows x D/r0 5 and 10
+    starts = sorted({int(s["name"].split("_t")[1]) for s in sc})
+    assert len(starts) == 2 and starts[1] - starts[0] >= 4                   # non-overlapping windows of 4 steps
+    s = sc[0]
+    assert s["frames"].shape == (4, 2, 256, 256) and s["truth"].shape == (4, 256, 256)
+    g = im[starts[0], 0, 1] / im[starts[0], 0, 1].mean()
+    assert np.allclose(s["truth"][0] * s["frames"][0].mean(), g)              # the truth is the sharpest frame
+    with pytest.raises(FileNotFoundError):
+        next(S.scene_set("real-time"))

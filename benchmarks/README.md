@@ -29,8 +29,15 @@ The `real` and `aniso-real` sets are crops of the example's SST/CRISP 8542 Å bu
 need the burst file `spot_20200727_083509_8542_npix512_original.h5`, which is not in the repository: get it as for the
 example (`reproducibility/download_script.py`) and pass `--h5 <path>`.
 
+The `real-time` set follows the real solar evolution of the SST/CRISP 8542 Å time sequence of
+`examples/spot_8542_time` (`sequence_8542_npix256_aligned.h5`, 49 steps of 12 frames; pass `--seq <path>`). The truth of
+a step is its sharpest wide-band frame; the 3 windows of 4 steps whose truths are sharpest are degraded with two-layer
+seeing at D/r0 5 and 10, as in `aniso-time`. The truth keeps the sequence's own noise (σ/μ ≈ 0.015), about 0.09 of
+its contrast inside the diffraction cutoff: no configuration can score below that.
+
 Options:
 - `--sets`
+- `--h5`, `--seq`: the burst and the time sequence, for the real sets
 - `--patch`, `--stride`, `--border`
 - `--loss`, `--optimizer`, `--iterations`
 - `--frames`, `--noise`

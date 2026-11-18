@@ -182,7 +182,7 @@ def run(a):
     base.pop("object2", None)
     rows = []
     for s in a.sets.split(","):
-        for sc in S.scene_set(s, n_frames=a.frames, noise=a.noise, alt=a.alt, h5_path=a.h5, holdout=a.holdout):
+        for sc in S.scene_set(s, n_frames=a.frames, noise=a.noise, alt=a.alt, h5_path=a.h5, holdout=a.holdout, seq_path=a.seq):
             if a.only and not any(sc["name"].startswith(o) for o in a.only.split(",")):
                 continue
             r = (fit_time_scene if sc.get("time") else fit_scene)(sc, base, a); r["set"] = s; rows.append(r)
@@ -237,7 +237,7 @@ def main():
     p.add_argument("--compare", nargs=2, metavar=("A", "B"))
     p.add_argument("--floor", help="with --compare: the run of A with another --seed")
     p.add_argument("--config", default=str(HERE.parent / "examples" / "spot_8542" / "kl.yaml"))
-    p.add_argument("--sets", default="synth,aniso-synth", help="comma list of synth, aniso-synth, real, aniso-real, aniso-time")
+    p.add_argument("--sets", default="synth,aniso-synth", help="comma list of synth, aniso-synth, real, aniso-real, aniso-time, real-time")
     p.add_argument("--patch", type=int, default=128); p.add_argument("--stride", type=int, default=32)
     p.add_argument("--border", type=int, help="apodization border (default: the yaml's)")
     p.add_argument("--loss", choices=["joint", "marginal"], help="default: the yaml's")
@@ -247,13 +247,14 @@ def main():
     p.add_argument("--filter", choices=["scharmer", "garrote", "tophat"], help="object filter (default: the yaml's)")
     p.add_argument("--su-rule", action="store_true", help="joint loss: s_u_joint = 250 (sigma/0.02)(12/N) from the data")
     p.add_argument("--nullspace", type=float, default=0.0, help="D/r0 of the experimental wavefront restriction (0: off)")
-    p.add_argument("--time-lambda", type=float, default=1.5e-4, help="aniso-time set: weight of the time term (regularization time)")
+    p.add_argument("--time-lambda", type=float, default=1.5e-4, help="time sets: weight of the time term (regularization time)")
     p.add_argument("--no-yaml-coupling", action="store_true", help="drop a coupling entry of the yaml (to measure without it)")
     p.add_argument("--frames", type=int, default=12); p.add_argument("--noise", type=float, default=0.02)
     p.add_argument("--alt", type=float, default=5000.0, help="height of the upper seeing layer of the aniso sets, m")
     p.add_argument("--seed", type=int, default=0, help="seed of the initial wavefront (another seed gives the noise floor)")
     p.add_argument("--gpu", type=int, default=0, help="-1 for the CPU")
     p.add_argument("--h5", help="the burst file, for the real sets")
+    p.add_argument("--seq", help="the time sequence file, for the real-time set")
     p.add_argument("--no-control", action="store_true")
     p.add_argument("--holdout", action="store_true", help="the hold-out scenes (other seeds): to confirm a choice")
     p.add_argument("--only", help="comma list of scene-name prefixes to keep (a quick screen)")
