@@ -1,6 +1,6 @@
 import numpy as np
 import scipy.special as sp
-import zern
+import torchmfbd.zern as zern
 import torch
 import scipy.linalg as la
 import time

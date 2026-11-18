@@ -1,7 +1,8 @@
-import sys
-from unittest.mock import MagicMock
-sys.modules['nvitop'] = MagicMock()
-sys.modules['dict_hash'] = MagicMock()
+"""Destretch the burst of ../spot_8542 to its average geometry and save it. To deconvolve the result with the
+reference example (from ../spot_8542):
+
+    python spot_8542_kl_patches.py ../spot_8542_destrech/spot_20200727_083509_8542_npix512_destretched.h5
+"""
 import numpy as np
 import h5py
 import torch
@@ -9,8 +10,6 @@ import torch.nn.functional as F
 import matplotlib.pyplot as pl
 import os
 
-# Ensure we can import torchmfbd
-sys.path.append('../../src')
 import torchmfbd
 
 if __name__ == '__main__':

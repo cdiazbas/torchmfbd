@@ -16,7 +16,8 @@ if __name__ == '__main__':
     lam = 7
     npixx = 256
     npixy = 512
-    obs_file = f"spot_20200727_083509_8542_npix512_original.h5"
+    # the burst as downloaded, or another one with the same layout (e.g. the output of ../spot_8542_destrech)
+    obs_file = sys.argv[1] if len(sys.argv) > 1 else "spot_20200727_083509_8542_npix512_original.h5"
 
     print(f'Reading observations from {obs_file}...')
     f = h5py.File(obs_file, 'r')
