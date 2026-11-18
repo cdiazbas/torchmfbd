@@ -249,3 +249,21 @@ With the true PSFs the object would be 30 to 48 % better on the real and anisopl
 Where the time goes: on a T4, a fit of 25 patches of 128 pixels with 12 frames takes 6.8 s, of which evaluating the
 PSFs and the loss is a third, in about 25 evaluations per outer iteration; the rest is mostly the gradients and the
 line search of LBFGS. Faster fits need fewer evaluations, not a cheaper loss.
+
+What limits the result: the PSF inside a patch
+----------------------------------------------
+
+With less noise the example's object gets *worse* on scenes whose seeing changes across the field, while the object
+from the true PSFs gets better (24 hard scenes; anisoplanatic real crops at D/r0 5: 0.129 → 0.204 when the noise
+goes from 0.02 to 0.0005, against 0.067 → 0.042 with the true PSFs). Twice the frames barely help (−0 to −14 %). The
+limit is the model, one PSF per patch, not the noise or the number of frames: the cleaner the data, the more the fit
+follows the variation of the PSF inside the patch.
+
+* A stronger object prior at low noise does not help (+3.6 to +8 %).
+* The data term of the joint loss is divided by the noise variance and the coupling is not, so at low noise the
+  coupling is relatively weaker. Scaling ``lambda`` up helps on the screen scenes below a noise of about 0.005
+  (−3 to −5 %), not at 0.01 or 0.04, and on hold-out scenes the gain shrinks to −1.5 to −2.4 %, inside the noise
+  floor. ``lambda`` 30 is kept at every noise level.
+* ``DeconvolutionSV`` (a PSF that varies across the field) with ``examples/spot_sv_8542/nmf_sv.yaml`` as it is: 18 to
+  38 % worse than the example on the anisoplanatic real crops, and 4 to 5 times slower at 150 iterations. It is not
+  tuned (its own loss, Adam, the object as a free variable); this is a starting point, not a verdict.
