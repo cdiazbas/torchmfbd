@@ -182,7 +182,9 @@ def run(a):
     base.pop("object2", None)
     rows = []
     for s in a.sets.split(","):
-        for sc in S.scene_set(s, n_frames=a.frames, noise=a.noise, alt=a.alt, h5_path=a.h5):
+        for sc in S.scene_set(s, n_frames=a.frames, noise=a.noise, alt=a.alt, h5_path=a.h5, holdout=a.holdout):
+            if a.only and not any(sc["name"].startswith(o) for o in a.only.split(",")):
+                continue
             r = (fit_time_scene if sc.get("time") else fit_scene)(sc, base, a); r["set"] = s; rows.append(r)
             print(f"{r['scene']:22s} object {r['err_obj']:.4f} (true PSFs {r['err_obj_true_psf']:.4f})  PSF {r['err_psf']:.3f}"
                   f"  R {r['err_transfer']:.3f}  {r['time_fit']:.1f} s", flush=True)
@@ -253,6 +255,8 @@ def main():
     p.add_argument("--gpu", type=int, default=0, help="-1 for the CPU")
     p.add_argument("--h5", help="the burst file, for the real sets")
     p.add_argument("--no-control", action="store_true")
+    p.add_argument("--holdout", action="store_true", help="the hold-out scenes (other seeds): to confirm a choice")
+    p.add_argument("--only", help="comma list of scene-name prefixes to keep (a quick screen)")
     p.add_argument("-o", "--output", default="run.json")
     a = p.parse_args()
     warnings.simplefilter("ignore"); os.environ.setdefault("TQDM_DISABLE", "1")

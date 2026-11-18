@@ -11,7 +11,13 @@ python benchmarks/run.py -o a.json                                 # the example
 python benchmarks/run.py -o b.json --patch 64 --border 10          # any change: --loss, --iterations, --config ...
 python benchmarks/run.py -o a_s1.json --seed 1                     # the same as a, from a perturbed start
 python benchmarks/run.py --compare a.json b.json --floor a_s1.json
+python benchmarks/run.py -o b_h.json --holdout ...                  # confirm a choice on scenes not used to make it
+python benchmarks/run.py -o q.json --sets real,aniso-real --only aniso_real   # a quick screen on a subset
 ```
+
+Choose on the default scenes, confirm on `--holdout` ones: every seed shifted, so other synthetic objects and other
+seeing, motion and noise (the real sets keep their crops of the burst). A choice that only wins where it was made
+is noise.
 
 The default sets need no download. On a Tesla V100S they take about 2 minutes:
 - `synth`: 13 synthetic 128-px bursts;

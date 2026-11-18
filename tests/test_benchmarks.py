@@ -74,3 +74,10 @@ def test_scene_truth_in_frame_units():
     sc = S.synthetic(0, n_frames=2)
     assert sc["truth"].mean() == pytest.approx(sc["frames"].mean() / sc["frames"].mean(), rel=1e-3)
     assert sc["psfs"].sum(axis=(-1, -2)) == pytest.approx(np.ones(2))
+
+
+def test_holdout_scenes_differ():
+    a, h = S.synthetic(3, n_frames=2), S.synthetic(3, n_frames=2, holdout=True)
+    assert h["name"] == a["name"] + "_h"
+    assert not np.array_equal(a["frames"], h["frames"])
+    assert np.array_equal(h["frames"], S.synthetic(3, n_frames=2, holdout=True)["frames"])

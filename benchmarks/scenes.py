@@ -16,6 +16,9 @@ Sets:
   aniso-real   12 such crops with the two-layer seeing of aniso-synth. Needs the burst file.
   aniso-time   6 synthetic 256-px scenes evolving over 4 time steps, each step with its own two-layer seeing, for the
                time path (filter_loss wiener_time). Needs nothing.
+Hold-out (holdout=True, run.py --holdout): every seed shifted by HOLDOUT, names ending in _h. Synthetic objects, seeing,
+motion and noise all change; the real sets keep their crops of the burst and change the seeing, motion and noise. Use
+them to confirm a choice made on the default scenes.
 The burst file is spot_20200727_083509_8542_npix512_original.h5, the data of examples/spot_8542 (not in the repository;
 see README.md for where to get it).
 """
@@ -27,6 +30,7 @@ DP = N * PIX / LD                         # pupil diameter in pixels of the N-px
 _yy, _xx = np.meshgrid(np.arange(N) - N / 2, np.arange(N) - N / 2, indexing="ij")
 PUPIL = (np.hypot(_yy, _xx) <= DP / 2).astype(float)
 _PM = PUPIL > 0
+HOLDOUT = 50000                           # added to every seed for the hold-out scenes (--holdout)
 CROPS = [(64, 64), (64, 128), (128, 64), (128, 128), (64, 0), (0, 64)]      # corners of the 384-px crops of the burst
 
 
@@ -59,9 +63,9 @@ def _motion(rng, j):
     return (0, 0) if j == 0 else tuple(int(v) for v in np.rint(1.5 * rng.standard_normal(2)))
 
 
-def synthetic(seed, n_frames=12, noise=0.02, d_r0=5.0):
+def synthetic(seed, n_frames=12, noise=0.02, d_r0=5.0, holdout=False):
     """One 128-px synthetic burst."""
-    rng = np.random.default_rng(1000 + seed)
+    rng = np.random.default_rng(1000 + seed + (HOLDOUT if holdout else 0))
     obj = _object(rng, N)
     frames, psfs, shifts = [], [], []
     for j in range(n_frames):
@@ -70,7 +74,7 @@ def synthetic(seed, n_frames=12, noise=0.02, d_r0=5.0):
         sh = _motion(rng, j)
         frames.append(np.roll(img, sh, (0, 1)) + noise * rng.standard_normal((N, N))); psfs.append(p); shifts.append(sh)
     frames = np.array(frames)
-    return dict(name=f"synth_s{seed}", frames=frames, truth=obj / frames.mean(), psfs=np.array(psfs), shifts=shifts)
+    return dict(name=f"synth_s{seed}" + ("_h" if holdout else ""), frames=frames, truth=obj / frames.mean(), psfs=np.array(psfs), shifts=shifts)
 
 
 def _embed(p, nb):
@@ -123,14 +127,14 @@ def _degrade_aniso(gt384, rng, n_frames, noise, d_r0, alt):
     return np.array(frames), (lambda j, y, x: psf_384(j, y + 64, x + 64)), shifts
 
 
-def time_scenes(n_frames=12, noise=0.02, alt=5000.0, n_steps=4, evolve=0.3):
+def time_scenes(n_frames=12, noise=0.02, alt=5000.0, n_steps=4, evolve=0.3, holdout=False):
     """Set aniso-time: 6 synthetic 256-px scenes that evolve in time, n_steps bursts each. The object of step t is
     cos(evolve t) (A - 1) + sin(evolve t) (B - 1) + 1 for two independent k^-3 fields A and B (the evolution of
     timestep/synth.py), and every step gets its own two-layer seeing (D/r0 5 and 10, upper layer at `alt`).
     Each scene: name, frames (T, J, 256, 256), truth (T, 256, 256), psf_at[t](j, y, x), shifts[t], all per step."""
     for d_r0 in (5.0, 10.0):
         for s in range(3):
-            rng = np.random.default_rng(8000 + 100 * int(d_r0) + s)
+            rng = np.random.default_rng(8000 + 100 * int(d_r0) + s + (HOLDOUT if holdout else 0))
             A, B = _object(rng, 384), _object(rng, 384)
             frames, truths, psf_at, shifts = [], [], [], []
             for t in range(n_steps):
@@ -138,7 +142,7 @@ def time_scenes(n_frames=12, noise=0.02, alt=5000.0, n_steps=4, evolve=0.3):
                 f, p, sh = _degrade_aniso(g384, rng, n_frames, noise, d_r0, alt)
                 frames.append(f); psf_at.append(p); shifts.append(sh)
                 truths.append(g384[64:320, 64:320] / f.mean())
-            yield dict(name=f"time_r0{d_r0:g}_s{s}", frames=np.array(frames), truth=np.array(truths), psf_at=psf_at,
+            yield dict(name=f"time_r0{d_r0:g}_s{s}" + ("_h" if holdout else ""), frames=np.array(frames), truth=np.array(truths), psf_at=psf_at,
                        shifts=shifts, time=True)
 
 
@@ -152,14 +156,14 @@ def _burst_truth(h5_path):
     return gt / gt.mean()
 
 
-def scene_set(name, n_frames=12, noise=0.02, alt=5000.0, h5_path=None):
+def scene_set(name, n_frames=12, noise=0.02, alt=5000.0, h5_path=None, holdout=False):
     """The scenes of one set (see the module docstring), generated one at a time."""
     if name == "synth":
         for seed in range(13):
-            yield synthetic(seed, n_frames, noise)
+            yield synthetic(seed, n_frames, noise, holdout=holdout)
         return
     if name == "aniso-time":
-        yield from time_scenes(n_frames, noise, alt)
+        yield from time_scenes(n_frames, noise, alt, holdout=holdout)
         return
     if name in ("real", "aniso-real"):
         if h5_path is None:
@@ -167,16 +171,16 @@ def scene_set(name, n_frames=12, noise=0.02, alt=5000.0, h5_path=None):
         gt = _burst_truth(h5_path)
         sources = [(f"s{s}", gt[y0:y0 + 384, x0:x0 + 384]) for s, (y0, x0) in enumerate(CROPS)]
     elif name == "aniso-synth":
-        sources = [(f"s{s}", _object(np.random.default_rng(7000 + s), 384)) for s in range(6)]
+        sources = [(f"s{s}", _object(np.random.default_rng(7000 + s + (HOLDOUT if holdout else 0)), 384)) for s in range(6)]
     else:
         raise ValueError(f"unknown scene set {name}")
     tag = {"real": "real", "aniso-real": "aniso_real", "aniso-synth": "aniso_synth"}[name]
     seeing = (3.0, 5.0, 10.0) if name == "real" else (5.0, 10.0)
     for d_r0 in seeing:
         for s, (label, g384) in enumerate(sources):
-            rng = np.random.default_rng(2000 + 100 * int(d_r0) + s)
+            rng = np.random.default_rng(2000 + 100 * int(d_r0) + s + (HOLDOUT if holdout else 0))
             truth = g384[64:320, 64:320] / g384[64:320, 64:320].mean()
-            sc = dict(name=f"{tag}_r0{d_r0:g}_{label}")
+            sc = dict(name=f"{tag}_r0{d_r0:g}_{label}" + ("_h" if holdout else ""))
             if name == "real":
                 frames, psfs, shifts = _degrade(g384, rng, n_frames, noise, d_r0)
                 sc.update(psfs=psfs)
