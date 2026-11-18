@@ -50,6 +50,12 @@ LBFGS 10; each number is the mean of the per-scene changes):
 The last two were measured with the same three settings given on the command line of ``benchmarks/run.py``, before
 the example's configuration was changed.
 
+Confirmed on hold-out scenes, which were not used to choose the configuration (every seed changed; 128-pixel
+patches, stride 32, Tesla V100S): −15.4 % on 42 scenes with neighbours (35 better, none more than 25 % worse), −11.9 %
+on 55 scenes with 6 frames (38 better) and −24.8 % on 13 synthetic scenes (13 better). Two starts of the configuration
+differ by 1.0 to 2.1 % per scene on these sets. On a Tesla T4 (another GPU type) the hold-out gain on the 42 scenes
+is −12.9 % (35 better; one real scene more than 25 % worse).
+
 All three parts are needed:
 
 * The coupling with the marginal loss gives nothing measurable (−1.4 %, inside its ±8 % spread).
@@ -174,3 +180,39 @@ Tried and not adopted
 * A port of the ``scharmer`` filter to the GPU: the same masks, but slower (479 ms against 19 ms on an Apple GPU,
   30 patches) because its flood fill is sequential. ``garrote`` runs on the GPU and is up to 10 times faster than
   ``scharmer`` with many patches.
+
+
+Around the example as it ships: what does not improve it
+--------------------------------------------------------
+
+Measured on 24 scenes chosen to be hard (real crops at D/r0 5 and 10, and anisoplanatic real crops), 128-pixel
+patches, the example's configuration as the reference; each number is the mean of the per-scene changes. A second
+start perturbed by :math:`10^{-3}` rad moves these scenes by ±7.3 % on average, so smaller changes are not results.
+
+* **Stride.** 64 instead of 32 halves the time but loses with anisoplanatism (+5 to +11 %). Use a stride that tiles
+  the field: with 48 on 256-pixel scenes the last rows are not covered by any patch.
+* **Coupling.** ``lambda`` 10, 100 or 300 and coupling 5 or 20 modes instead of 10: no gain (−0.0 to +5.9 %). 96-pixel
+  patches with a stronger coupling (30, 100, 300) are worse (+8 to +11 %) and their PSFs much worse (transfer error
+  +26 to +29 %).
+* **Longer fits** (15 or 20 outer iterations, ``lbfgs_max_iter`` 30), **a stronger object prior** (``s_u_joint`` auto
+  times 2) and, the other way round, a weaker one (times 0.5, +12 %): the first two help the isoplanatic real crops
+  (−3 to −16 %) and hurt the anisoplanatic ones (+4 to +25 %). With the PSF varying inside the patch, fitting more
+  closely fits that variation instead of the object.
+* **Fewer iterations, for speed**: 8 outer iterations (+3.8 %), ``lbfgs_max_iter`` 15 (+3.5 %); 6 iterations or
+  ``lbfgs_max_iter`` 10 are much worse (+13 to +14 %). Intermediate prior levels (auto times 0.75 or 1.5) and a
+  higher object cutoff (0.98/0.995) do not help either.
+* **Mode annealing.** All modes from the start, or ending at 30 % or 90 % of the iterations, or a sigmoid schedule:
+  worse (+3.5 to +16 %) than the linear 10–60 % of the example.
+* **Loss filter** ``lowpass``: +2.6 % and 2.8 times slower. **Object cutoff** 0.85/0.90 or 0.90/0.95: no gain.
+* **Two starts** (the usual one and a perturbed one), keeping the better whole fit or the better start per patch:
+  no gain (−0.1 / +0.2 %), 1.5 times slower. The example's zero start had no failed scene; the failures of the
+  perturbed start were caught, but there was nothing to catch in the zero start.
+* **Down-weighting frames with a large residual** (iterative reweighting): +1.8 %, worse in 18 of 24 scenes.
+* **A Kolmogorov prior on the wavefront coefficients**: +8.6 %, worse in 19 of 24.
+
+With the true PSFs the object would be 30 to 48 % better on the real and anisoplanatic scenes (13 % at D/r0 3 and
+6 to 8 % on the synthetic ones): the PSF estimate is what limits the result, not the object filter.
+
+Where the time goes: on a T4, a fit of 25 patches of 128 pixels with 12 frames takes 6.8 s, of which evaluating the
+PSFs and the loss is a third, in about 25 evaluations per outer iteration; the rest is mostly the gradients and the
+line search of LBFGS. Faster fits need fewer evaluations, not a cheaper loss.
