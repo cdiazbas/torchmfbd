@@ -1560,7 +1560,70 @@ class Deconvolution(object):
 
         # Objects in the precision of the input
         return O_flat.reshape(M, Nx, Ny).to(S.dtype)
-    
+
+    def solve_object_time_evolution_batched(self, S, D, Reg_Space, lambda_s, lambda_t):
+        """
+        solve_object_time_evolution for all the sequences of a batch at once, with one time weight: the same
+        operations element by element, with the sequences as a leading dimension, so the result is the same as
+        solving each sequence in turn (the threshold of the frequencies without data is still taken per sequence).
+        A time-series fit called the single-sequence solver once per patch and evaluation.
+
+        Parameters:
+        -----------
+        S, D : torch.Tensor (complex)
+            Shape (n_seq, M, J, Nx, Ny): the OTFs and the Fourier transformed frames.
+        Reg_Space, lambda_s, lambda_t : as in solve_object_time_evolution (lambda_t a scalar)
+
+        Returns:
+        --------
+        O : torch.Tensor (complex), shape (n_seq, M, Nx, Ny)
+        """
+        n_s, M, J, Nx, Ny = S.shape
+        B = Nx * Ny
+
+        sum_S_sq_flat = torch.sum(torch.abs(S)**2, dim=2).reshape(n_s, M, B)
+        RHS = torch.sum(torch.conj(S) * D, dim=2).reshape(n_s, M, B)
+        reg_s_flat = (lambda_s * Reg_Space).flatten()
+
+        if M == 1:
+            return (RHS / (sum_S_sq_flat + reg_s_flat + 1e-10)).reshape(n_s, M, Nx, Ny)
+
+        lt_max = float(lambda_t)
+        w_freq = torch.sum(sum_S_sq_flat, dim=1)
+        no_data = (w_freq <= 1e-6 * lt_max) | (w_freq <= 1e-10 * torch.max(w_freq, dim=1, keepdim=True).values)
+        if torch.any(no_data):
+            sum_S_sq_flat = torch.where(no_data[:, None, :], torch.ones_like(sum_S_sq_flat), sum_S_sq_flat)
+
+        work = torch.complex64 if S.device.type == 'mps' else torch.complex128
+        a = torch.full((n_s, M - 1, B), -lambda_t, dtype=work, device=S.device)
+        c = torch.full((n_s, M - 1, B), -lambda_t, dtype=work, device=S.device)
+        d_rows = []
+        for m in range(M):
+            row = sum_S_sq_flat[:, m, :] + reg_s_flat
+            if m == 0 or m == M - 1:
+                row = row + lambda_t
+            else:
+                row = row + 2.0 * lambda_t
+            d_rows.append(row)
+
+        c_prime_list = [c[:, 0, :] / d_rows[0]]
+        d_prime_list = [RHS[:, 0, :] / d_rows[0]]
+        for m in range(1, M - 1):
+            denom = d_rows[m] - a[:, m - 1, :] * c_prime_list[m - 1]
+            c_prime_list.append(c[:, m, :] / denom)
+            d_prime_list.append((RHS[:, m, :] - a[:, m - 1, :] * d_prime_list[m - 1]) / denom)
+        denom = d_rows[M - 1] - a[:, M - 2, :] * c_prime_list[M - 2]
+        d_prime_list.append((RHS[:, M - 1, :] - a[:, M - 2, :] * d_prime_list[M - 2]) / denom)
+
+        O_list = [None] * M
+        O_list[M - 1] = d_prime_list[M - 1]
+        for m in range(M - 2, -1, -1):
+            O_list[m] = d_prime_list[m] - c_prime_list[m] * O_list[m + 1]
+
+        O_flat = torch.stack(O_list, dim=1)
+        O_flat = torch.where(no_data[:, None, :], torch.zeros((), dtype=O_flat.dtype, device=O_flat.device), O_flat)
+        return O_flat.reshape(n_s, M, Nx, Ny).to(S.dtype)
+
     def compute_object(self, images_ft, otf, sigma, plane, type_filter='tophat', pars_s0=None, pars_s2=None, need_filter=True):
         """
         Compute the object in Fourier space using the specified filter.
@@ -1641,7 +1704,10 @@ class Deconvolution(object):
                 lambda_t = self.time_regularization * (64.0 / self.npix)**2 * (images_tmp.shape[2] / 12.0)
 
                 out = []
-                for j in range(n_seq):
+                if self.loss_filter == 'wiener_time':
+                    # All sequences at once: the same recursion per frequency, without a Python loop over the patches
+                    out = [self.solve_object_time_evolution_batched(otf_tmp, images_tmp, Reg_Space, lambda_s, lambda_t)]
+                for j in range(n_seq if self.loss_filter == 'wiener_time_contrast' else 0):
                     if self.loss_filter == 'wiener_time_contrast':
                         # rms of each step's frames without their mean. Dividing by the mean of the patch, as before,
                         # divided by the zero frequency of apodized patches whose mean remove_gradient_apodization has

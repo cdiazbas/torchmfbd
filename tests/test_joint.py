@@ -155,6 +155,23 @@ def test_time_loss_skips_the_mask(make_synthetic_frames, monkeypatch):
     assert torch.equal(fast.obj[0], full.obj[0]) and torch.equal(fast.loss, full.loss)
     assert n_fast < n_full
 
+def test_time_solver_batched_equals_loop():
+    # The batched time solver must give, bit for bit, what the single-sequence solver gives for each sequence,
+    # including frequencies without data (zero OTF beyond a cutoff, different per sequence)
+    torch.manual_seed(0)
+    config_path, config = _time_config()
+    dec = torchmfbd.Deconvolution(config)
+    n_s, M, J, n = 3, 4, 5, 16
+    S = torch.randn(n_s, M, J, n, n, dtype=torch.complex64)
+    S[0, ..., 6:, :] = 0
+    S[2, ..., :, 9:] = 0
+    Dd = torch.randn(n_s, M, J, n, n, dtype=torch.complex64)
+    reg = torch.rand(n, n)
+    for lam_s in (0.0, 0.3):
+        batched = dec.solve_object_time_evolution_batched(S, Dd, reg, lam_s, 2e-3)
+        loop = torch.stack([dec.solve_object_time_evolution(S[j], Dd[j], reg, lam_s, 2e-3) for j in range(n_s)])
+        assert torch.equal(batched, loop)
+
 def test_prior_frames_scale():
 
     # The joint object prior keeps its weight relative to the data above 12 frames (s_u_joint * 12 / N) and is
