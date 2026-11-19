@@ -2,44 +2,58 @@ telescope:
     diameter: 100.0
     central_obscuration : 0.0
 
+# The configuration of examples/spot_8542/kl.yaml (128-px patches, joint loss, coupling of neighbouring patches) with
+# the time term. On the real-time scenes of benchmarks/ (this sequence degraded with known two-layer seeing, D/r0 5 and
+# 10) it gives an object error of 0.279, against 0.395 with the earlier settings of this example (92-px patches, Adam
+# 50, fixed s_u_joint, wiener_time_contrast).
 images:
-    n_pixel : 92    
+    n_pixel : 128
     pix_size : 0.059
-    apodization_border : 6
+    apodization_border : 24
+    remove_gradient_apodization : True
 
 object1:
     wavelength : 8542.0
     image_filter: scharmer
-    cutoff : [0.95, 0.98]
-    s_u_joint: 120.98
+    cutoff : [0.95, 0.99]
+    # not used by the time path (wiener_time solves the object with the time term); kept for runs without it
+    s_u_joint: auto
 
 object2:
     wavelength : 8542.0
     image_filter: scharmer
-    cutoff : [0.95, 0.98]
-    s_u_joint: 120.98
-    
+    cutoff : [0.95, 0.99]
+    s_u_joint: auto
+
 optimization:
     gpu : 0
     transform : softplus
-    softplus_scale : 1.0    
-    lr_obj : 0.02
-    lr_modes : 0.1
-    lr_prior : 0.1
+    softplus_scale : 1.0
+    lr_obj : 0.00
+    lr_modes : 0.08
+    lr_prior : 0.08
     loss_type: joint
-    filter_loss: wiener_time_contrast
+    filter_loss: wiener_time
+    show_object_info: False
 
 regularization:
+     # Neighbouring patches see almost the same low-order seeing (within each time step; set_neighbours in the script)
+     coupling:
+        lambda : 30.0
+        n_modes : 10
+     # Weight of the difference between consecutive steps. On the real sequence 5e-4 to 1.5e-3 is best; 1.5e-4, which
+     # suits synthetic scenes, is worse than no time term at D/r0 10 (hold-out scenes: 0.396 against 0.367; 5e-4: 0.348)
+     time:
+        lambda : 5.0e-4
      iuwt1:
         variable : object
         lambda : 0.00
         nbands : 5
-     time:        
-        lambda : 6.2e-4
 
 psf:
     model : kl
     nmax_modes : 54
+    jitter : none
 
 initialization:
     object : contrast
