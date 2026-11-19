@@ -1561,7 +1561,7 @@ class Deconvolution(object):
         # Objects in the precision of the input
         return O_flat.reshape(M, Nx, Ny).to(S.dtype)
     
-    def compute_object(self, images_ft, otf, sigma, plane, type_filter='tophat', pars_s0=None, pars_s2=None):
+    def compute_object(self, images_ft, otf, sigma, plane, type_filter='tophat', pars_s0=None, pars_s2=None, need_filter=True):
         """
         Compute the object in Fourier space using the specified filter.
         Parameters:
@@ -1572,6 +1572,10 @@ class Deconvolution(object):
             The Fourier transform of the point spread function (PSF).
         type_filter (str, optional): 
             The type of filter to use ('tophat'/'scharmer'/'garrote'). Default is 'tophat'.
+        need_filter (bool, optional):
+            If False, the scharmer or garrote mask is not computed and the filtered object carries only the
+            diffraction mask; the unfiltered object (the first output) is the same. For callers that use only
+            the unfiltered object. Default is True.
         Returns:
         --------
         torch.Tensor: The computed object in Fourier space.
@@ -1663,7 +1667,11 @@ class Deconvolution(object):
                 SS_mask, SI_mask = Sconj_S, Sconj_I
                 if time_coupled:
                     SS_mask, SI_mask = self.time_window_sums(Sconj_S, Sconj_I)
-                if self.image_filter[i] == 'scharmer':
+                if not need_filter:
+                    # The caller only uses the unfiltered object (the loss of the time path): the mask, whose
+                    # scharmer flood fill runs on the CPU, took 62 % of a time-series fit and was thrown away
+                    mask = self.mask_diffraction_th[i][None, :, :]
+                elif self.image_filter[i] == 'scharmer':
                     mask = self.lofdahl_scharmer_filter(SS_mask, SI_mask, s2_filt.detach()) * self.mask_diffraction_th[i][None, :, :]
                 else:
                     mask = self.garrote_filter(SS_mask, SI_mask, s2_filt) * self.mask_diffraction_th[i][None, :, :]
@@ -1776,12 +1784,14 @@ class Deconvolution(object):
         
         # If we want to do time regularization, first get the object with the Wiener filter
         if self.loss_filter == 'wiener_time' or self.loss_filter == 'wiener_time_contrast':
+            # The loss uses only the unfiltered object: no scharmer/garrote mask (need_filter=False)
             obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, 
                                                                         otf, 
                                                                         sigma, 
                                                                         None, 
                                                                         pars_s0=pars_s0, 
-                                                                        pars_s2=pars_s2)
+                                                                        pars_s2=pars_s2,
+                                                                        need_filter=False)
         
         for i in range(self.n_o):            
 

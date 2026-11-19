@@ -127,6 +127,34 @@ def test_time_contrast_weights_positive(make_synthetic_frames, monkeypatch):
     assert all(c[0] > c[1] for c in seen)
     assert torch.all(torch.isfinite(dec.obj[0]))
 
+def test_time_loss_skips_the_mask(make_synthetic_frames, monkeypatch):
+    # The loss of the time path uses only the unfiltered object, so it does not compute the scharmer mask
+    # (need_filter=False). The fit must be the same as when the mask is computed and thrown away.
+    def fit(force_mask):
+        config_path, config = _time_config()
+        config['regularization'] = {'time': {'lambda': 1e-3}}
+        obj, frames = make_synthetic_frames(config_path, 2, 5, 0.005, seed=0)
+        calls = []
+        orig_cobj, orig_ls = torchmfbd.Deconvolution.compute_object, torchmfbd.Deconvolution.lofdahl_scharmer_filter
+        def cobj(self, *a, **k):
+            if force_mask:
+                k['need_filter'] = True
+            return orig_cobj(self, *a, **k)
+        def ls(self, *a, **k):
+            calls.append(1)
+            return orig_ls(self, *a, **k)
+        monkeypatch.setattr(torchmfbd.Deconvolution, 'compute_object', cobj)
+        monkeypatch.setattr(torchmfbd.Deconvolution, 'lofdahl_scharmer_filter', ls)
+        dec = torchmfbd.Deconvolution(config)
+        dec.add_frames(frames[None, ...], sigma=0.005 * torch.ones(1, 2, 5), id_object=0, id_diversity=0, diversity=0.0)
+        dec.deconvolve(infer_object=False, optimizer='lbfgs', simultaneous_sequences=200, n_iterations=3)
+        monkeypatch.undo()
+        return dec, len(calls)
+    fast, n_fast = fit(False)
+    full, n_full = fit(True)
+    assert torch.equal(fast.obj[0], full.obj[0]) and torch.equal(fast.loss, full.loss)
+    assert n_fast < n_full
+
 def test_prior_frames_scale():
 
     # The joint object prior keeps its weight relative to the data above 12 frames (s_u_joint * 12 / N) and is
