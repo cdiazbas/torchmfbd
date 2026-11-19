@@ -103,6 +103,30 @@ def test_time_5d(make_synthetic_frames):
     assert torch.all(torch.isfinite(out)), 'Non-finite object'
     assert torch.allclose(out.mean(dim=(-1, -2)), frames.mean(dim=(-1, -2, -3))[None, :], rtol=0.05), f'Object mean {out.mean(dim=(-1, -2)).tolist()}, frames mean {frames.mean(dim=(-1, -2, -3)).tolist()}'
 
+def test_time_contrast_weights_positive(make_synthetic_frames, monkeypatch):
+    # wiener_time_contrast weights the time term by the contrast of each step. It used to divide by the zero frequency
+    # of the apodized patches, which remove_gradient_apodization takes to ~0: contrasts of either sign, which can turn
+    # the time weight negative. The step with the sharper frames must get the larger contrast.
+    config_path, config = _time_config()
+    config['optimization']['filter_loss'] = 'wiener_time_contrast'
+    config['regularization'] = {'time': {'lambda': 1e-3}}
+    config['images']['remove_gradient_apodization'] = True
+    obj, frames = make_synthetic_frames(config_path, 2, 5, 0.005, seed=0)
+    blurred = frames.clone()
+    blurred[1] = torch.nn.functional.avg_pool2d(frames[1], 3, 1, 1, count_include_pad=False)    # step 1 less sharp
+    seen = []
+    orig = torchmfbd.Deconvolution.solve_object_time_evolution
+    def spy(self, S, D, Reg_Space, lambda_s, lambda_t, contrast=None):
+        seen.append(contrast.detach().cpu().clone())
+        return orig(self, S, D, Reg_Space, lambda_s, lambda_t, contrast=contrast)
+    monkeypatch.setattr(torchmfbd.Deconvolution, 'solve_object_time_evolution', spy)
+    dec = torchmfbd.Deconvolution(config)
+    dec.add_frames(blurred[None, ...], sigma=0.005 * torch.ones(1, 2, 5), id_object=0, id_diversity=0, diversity=0.0)
+    dec.deconvolve(infer_object=False, optimizer='adam', simultaneous_sequences=200, n_iterations=3)
+    assert seen and all(torch.all(torch.isfinite(c)) and torch.all(c > 0) for c in seen)
+    assert all(c[0] > c[1] for c in seen)
+    assert torch.all(torch.isfinite(dec.obj[0]))
+
 def test_prior_frames_scale():
 
     # The joint object prior keeps its weight relative to the data above 12 frames (s_u_joint * 12 / N) and is

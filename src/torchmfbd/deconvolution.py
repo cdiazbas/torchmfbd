@@ -1639,12 +1639,14 @@ class Deconvolution(object):
                 out = []
                 for j in range(n_seq):
                     if self.loss_filter == 'wiener_time_contrast':
-                        mn_f = torch.mean(images_raw[j, :, :, 0, 0], dim=-1) / self.npix**2
-                        tmp = torch.sum(torch.abs(images_raw[j, :, ...])**2, dim=(-1, -2)) - images_raw[j, :, :, 0, 0].real**2
+                        # rms of each step's frames without their mean. Dividing by the mean of the patch, as before,
+                        # divided by the zero frequency of apodized patches whose mean remove_gradient_apodization has
+                        # taken out: near 0 and of either sign, it gave "contrasts" of -200 to 30 and could turn the
+                        # time weight negative. Only the ratios between steps are used, and the frames of a sequence
+                        # share their mean, so the rms ranks the steps as the contrast would
+                        tmp = torch.sum(torch.abs(images_raw[j, :, ...])**2, dim=(-1, -2)) - torch.abs(images_raw[j, :, :, 0, 0])**2
                         tmp = torch.mean(tmp, dim=-1)
-                        std_f = torch.sqrt(tmp / self.npix**4)
-
-                        contrast = (std_f / mn_f).real
+                        contrast = torch.sqrt(tmp / self.npix**4).real
                     else:
                         contrast = None
                     
