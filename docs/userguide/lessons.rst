@@ -148,6 +148,39 @@ Time series (``filter_loss: wiener_time``)
   one neighbour. Penalizing the curvature of the time evolution instead of the difference between steps does not
   change this (mean error 0.224 → 0.219) and makes a series with one bad step worse (0.202 → 0.214).
 
+The real Sun in time
+^^^^^^^^^^^^^^^^^^^^
+
+The synthetic evolution above is a mix of two random fields. The ``real-time`` set of ``benchmarks/`` follows the real
+solar evolution of the SST/CRISP 8542 sequence of ``examples/spot_8542_time``: the sharpest frame of each step is the
+truth, and 3 windows of 4 steps are degraded with two-layer seeing at D/r0 5 and 10 (6 scenes, 12 frames, noise 0.02).
+The truth keeps the sequence's own noise (σ/μ ≈ 0.015), about 0.09 of its contrast inside the cutoff, which no
+configuration can go below.
+
+* **The weight of the time term.** The weight that suits the synthetic scenes (1.5e-4) is too weak for the real Sun:
+  on hold-out scenes at D/r0 10 it is worse than no time term (0.396 against 0.367), and 5e-4 is better than both
+  (0.348; mean −5.8 % against 1.5e-4). At D/r0 5 both weights bring 0.336 to 0.202. Between 5e-4 and 1.5e-3 the result
+  is flat; on the synthetic set 5e-4 costs +5.3 % on the default scenes and nothing on the hold-out ones. Without the
+  time term at D/r0 10 the object is sharp but false; with too weak a weight it stays almost as blurred as a frame.
+* **Bad steps already borrow from good ones.** With the seeing alternating between D/r0 5 and 10 from step to step,
+  the time term brings the bad steps from 0.37 to 0.24, next to the good ones (0.22). Equalising the power spectrum
+  of each step towards the sharpest one after the fit adds nothing (+0.2 %).
+* **How the Sun changes between steps.** Over one step the fraction of the power that changes grows from 1.5 % at the
+  largest scales to 100 % at 0.6 of the cutoff. Yet taking time weight away where the Sun renews is worse (+1.6 to
+  +6.6 %): at those frequencies the term averages the noise of neighbouring steps, which is worth more than the
+  evolution it blurs. Giving them more weight is not robust either (−2.0 %, then −0.4 % on hold-out scenes).
+* **Solar motion.** The Sun moves 0.3 px per step (median); removing the motion perfectly would improve the object by
+  2 to 6 %. A second fit on frames aligned with the flow of the first fit's objects gains about 2 % (−2.8 and −3.8 %
+  on hold-out scenes, 6 of 6, but +0.4 % on the default ones of one GPU) at twice the time; the flow of the mean
+  frames is worse (+3.5 %).
+* **Not useful here:** a window of 8 steps instead of two of 4 (+2.7 %), stride 16 (−0.3 % at 3 times the time),
+  more iterations (+19 %), 96-pixel patches (+16 %), no coupling (+5 %) or coupling 100 (+3 %), ``mask_window`` 1 or
+  5 (±2 %), and a mean high-order halo in the OTF (+4.7 %, even with the true D/r0). ``s_u_joint`` has no effect
+  with ``wiener_time``.
+* ``wiener_time_contrast`` weighted the time term by a contrast divided by the mean of apodized patches, which is
+  near zero: +63 % on these scenes before the fix. Even computed right it only weakens the time term on the better
+  steps, which is worse at D/r0 10.
+
 
 Judging a result without a truth
 --------------------------------

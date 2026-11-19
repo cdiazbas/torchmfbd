@@ -247,7 +247,7 @@ def main():
     p.add_argument("--filter", choices=["scharmer", "garrote", "tophat"], help="object filter (default: the yaml's)")
     p.add_argument("--su-rule", action="store_true", help="joint loss: s_u_joint = 250 (sigma/0.02)(12/N) from the data")
     p.add_argument("--nullspace", type=float, default=0.0, help="D/r0 of the experimental wavefront restriction (0: off)")
-    p.add_argument("--time-lambda", type=float, default=1.5e-4, help="time sets: weight of the time term (regularization time)")
+    p.add_argument("--time-lambda", type=float, default=5e-4, help="time sets: weight of the time term (regularization time); 5e-4 measured best on real-time")
     p.add_argument("--no-yaml-coupling", action="store_true", help="drop a coupling entry of the yaml (to measure without it)")
     p.add_argument("--frames", type=int, default=12); p.add_argument("--noise", type=float, default=0.02)
     p.add_argument("--alt", type=float, default=5000.0, help="height of the upper seeing layer of the aniso sets, m")
