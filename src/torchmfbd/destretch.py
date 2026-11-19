@@ -164,11 +164,19 @@ def destretch(frames,
 
 
 def apply_destretch(frames, tt, mode='bicubic'):
+    """
+    Warp frames (n_seq, n_o, n_f, n_x, n_y) with a flow, e.g. the one destretch estimated on other frames of the same
+    sequence. tt is the flow as destretch returns it, (n_seq, n_f, 2, n_x, n_y), or with the first two axes merged,
+    (n_seq * n_f, 2, n_x, n_y).
+    """
 
     n_seq, n_o, n_f, n_x, n_y = frames.shape
-    
+
+    if tt.dim() == 5:
+        tt = rearrange(tt, 'nb nf d nx ny -> (nb nf) d nx ny')
+
     im = rearrange(frames, 'nb no nf nx ny -> (nb nf) no nx ny')
-    
+
     warped = warp(im, tt, mode=mode)
 
     warped = rearrange(warped, '(nb nf) no nx ny -> nb no nf nx ny', nb=n_seq)
