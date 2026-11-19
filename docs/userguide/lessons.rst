@@ -173,6 +173,11 @@ configuration can go below.
   2 to 6 %. A second fit on frames aligned with the flow of the first fit's objects gains about 2 % (−2.8 and −3.8 %
   on hold-out scenes, 6 of 6, but +0.4 % on the default ones of one GPU) at twice the time; the flow of the mean
   frames is worse (+3.5 %).
+* **Speed.** In a time-series fit the loss computed the ``scharmer`` mask (a flood fill on the CPU) at every
+  evaluation and did not use it, and solved the time term patch by patch in a Python loop. Without both, one window of
+  7 steps of the real sequence (25 patches, 2 objects, LBFGS 10) takes 31 s instead of 215 s on a V100S, with the same
+  objects bit for bit, and ``examples/spot_8542_time`` takes 6 min 50 s for its 49 steps instead of 41 min. Fewer
+  iterations do not pay: 8 instead of 10 save 20 % of the time and cost 7 % of object error.
 * **Not useful here:** a window of 8 steps instead of two of 4 (+2.7 %), stride 16 (−0.3 % at 3 times the time),
   more iterations (+19 %), 96-pixel patches (+16 %), no coupling (+5 %) or coupling 100 (+3 %), ``mask_window`` 1 or
   5 (±2 %), and a mean high-order halo in the OTF (+4.7 %, even with the true D/r0). ``s_u_joint`` has no effect
