@@ -1,6 +1,6 @@
-"""Does the SNR rule of the time weight do what it says, and nothing when it is off? A link (t, t+1) gets the time
+"""Does the SNR rule of the time weight do what it says, on by default, and nothing when it is switched off? A link (t, t+1) gets the time
 weight times threshold_v / min(SNR_t, SNR_t+1), at least 1 and at most 100, with threshold_v = min(threshold, best SNR
-of the series) for snr_reference 'window'. Off (no snr_threshold, or 0), the fit must be the same bit for bit. Whether
+of the series) for snr_reference 'window'. It is on by default (threshold 12); snr_threshold 0 gives one weight. Whether
 the rule improves the objects is measured on scenes with a truth (exchange/, 2026-11-20/21), not here."""
 import pytest
 import torch
@@ -43,10 +43,25 @@ def test_equal_links_match_the_scalar_weight(dec):
     torch.testing.assert_close(links, scalar, rtol=1e-14, atol=1e-15)
 
 
-def test_off_is_bitwise_unchanged(make_synthetic_frames):
+def test_default_is_the_rule(make_synthetic_frames):
+    # Since 2026-11-21 the rule is on unless the configuration switches it off: no snr_threshold = snr_threshold 12
     e_absent, _ = _series_fit(make_synthetic_frames, 5e-4, bad_factor=4.0, sigma=0.02, iterations=10)
-    e_zero, _ = _series_fit(make_synthetic_frames, 5e-4, bad_factor=4.0, sigma=0.02, iterations=10, time_extra={"snr_threshold": 0})
-    assert torch.equal(e_absent, e_zero)
+    e_12, _ = _series_fit(make_synthetic_frames, 5e-4, bad_factor=4.0, sigma=0.02, iterations=10, time_extra={"snr_threshold": 12})
+    assert torch.equal(e_absent, e_12)
+
+
+def test_zero_gives_one_weight_for_every_link(make_synthetic_frames, monkeypatch):
+    # snr_threshold 0: the solver gets the single scalar weight, the code path of the library before the rule
+    seen = []
+    solve = torchmfbd.Deconvolution.solve_object_time_evolution_batched
+
+    def spy(self, S, D, Reg_Space, lambda_s, lambda_t):
+        seen.append(lambda_t)
+        return solve(self, S, D, Reg_Space, lambda_s, lambda_t)
+
+    monkeypatch.setattr(torchmfbd.Deconvolution, "solve_object_time_evolution_batched", spy)
+    _series_fit(make_synthetic_frames, 5e-4, bad_factor=4.0, sigma=0.02, iterations=2, time_extra={"snr_threshold": 0})
+    assert seen and all(isinstance(x, float) for x in seen)
 
 
 def test_rule_weights_the_links_of_the_noisy_step(make_synthetic_frames, monkeypatch):

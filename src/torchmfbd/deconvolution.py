@@ -20,7 +20,7 @@ import torchmfbd.kl_modes as kl_modes
 import torchmfbd.noise as noise
 from torchmfbd.reg_smooth import RegularizationSmooth
 from torchmfbd.reg_iuwt import RegularizationIUWT
-from torchmfbd.reg_time import RegularizationTime, snr_link_factors
+from torchmfbd.reg_time import RegularizationTime, snr_link_factors, SNR_RULE_DEFAULT_THRESHOLD
 from torchmfbd.noise import step_snr
 import glob
 import pathlib
@@ -605,7 +605,7 @@ class Deconvolution(object):
         self.time_regularization = 0.0
         self.time_mask_window = 3
         # SNR rule of the time weight (0: one weight for every link)
-        self.time_snr_threshold = 0.0
+        self.time_snr_threshold = SNR_RULE_DEFAULT_THRESHOLD
         self.time_snr_reference = 'window'
         # Coupling of the wavefronts of neighbouring patches (needs set_neighbours); 0 unless a `coupling` entry sets it
         self.coupling_lambda = 0.0
@@ -621,13 +621,13 @@ class Deconvolution(object):
                 self.time_mask_window = int(v.get('mask_window', 3))
                 if self.time_mask_window < 1 or self.time_mask_window % 2 == 0:
                     raise ValueError(f"regularization.{k}.mask_window must be a positive odd number of time steps, got {self.time_mask_window}")
-                self.time_snr_threshold = float(v.get('snr_threshold', 0.0))
+                self.time_snr_threshold = float(v.get('snr_threshold', SNR_RULE_DEFAULT_THRESHOLD))
                 self.time_snr_reference = str(v.get('snr_reference', 'window'))
                 if self.time_snr_threshold < 0:
                     raise ValueError(f"regularization.{k}.snr_threshold must be >= 0 (0 switches the SNR rule off), got {self.time_snr_threshold}")
                 if self.time_snr_reference not in ('window', 'fixed'):
                     raise ValueError(f"regularization.{k}.snr_reference must be 'window' or 'fixed', got '{self.time_snr_reference}'")
-                if self.time_snr_threshold > 0 and self.config['optimization'].get('filter_loss') == 'wiener_time_contrast':
+                if 'snr_threshold' in v and self.time_snr_threshold > 0 and self.config['optimization'].get('filter_loss') == 'wiener_time_contrast':
                     raise ValueError(f"regularization.{k}.snr_threshold needs filter_loss wiener_time: wiener_time_contrast already weights the links by the contrast")
 
         for k, v in self.config['regularization'].items():            
@@ -1734,7 +1734,7 @@ class Deconvolution(object):
 
                 out = []
                 if self.loss_filter == 'wiener_time':
-                    snr_threshold = float(getattr(self, "time_snr_threshold", 0.0))      # set by set_regularizations
+                    snr_threshold = float(getattr(self, "time_snr_threshold", SNR_RULE_DEFAULT_THRESHOLD))      # set by set_regularizations
                     if snr_threshold > 0 and self.n_t > 1:
                         # SNR rule: a link to a step whose frames are below the threshold is weighted up, so that step
                         # leans on its neighbours (and anchors its PSFs) instead of fitting a sharp PSF to its noise.

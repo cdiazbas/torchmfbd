@@ -13,6 +13,12 @@ class RegularizationTime(Regularization):
         # placeholder and must not be added as a loss term that silently contributes zero
         raise NotImplementedError("RegularizationTime has no loss term: use filter_loss wiener_time with a `time` regularization entry")
 
+# Threshold of the SNR rule when the time regularization does not give one: 1/f, with f ~ 0.08 the fraction of power the
+# Sun changes per step in the CRISP 8542 sequence. On by default since the validation of 2026-11-21: better than one
+# weight in 12 of 12 new 49-step series (mean -23.7 %) and the same as the reference restoration on the real sequence.
+# snr_threshold: 0 in the configuration gives one weight for every link, as before.
+SNR_RULE_DEFAULT_THRESHOLD = 12.0
+
 # Largest factor by which the SNR rule raises the time weight of a link. Not tuned: it only caps steps with no data at
 # all, and on 2026-11-20/21 no measured scene reached it with the window reference
 SNR_RULE_CAP = 100.0
