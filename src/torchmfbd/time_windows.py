@@ -71,9 +71,14 @@ def unique_windows(plan):
     return sorted(set(plan))
 
 
-def assemble_time_windows(plan, fit_window):
+def assemble_time_windows(plan, fit_window, map=map):
     """
     Fit every distinct window of a plan once and take each step from its own window.
+
+    The windows are independent fits, so they can run at the same time: pass as `map` the map of a pool whose
+    workers each own a GPU (for instance concurrent.futures.ProcessPoolExecutor(...).map with an initializer that
+    sets the device). Each window must always land on the same type of GPU for the result to be reproducible: the
+    same fit differs by up to 9 % between a T4 and a V100S (2026-11-21).
 
     Parameters
     ----------
@@ -82,15 +87,19 @@ def assemble_time_windows(plan, fit_window):
     fit_window : callable
         fit_window(first, n) fits steps first ... first + n - 1 together and returns a sequence of n per-step results
         (objects, or tuples of what the caller needs).
+    map : callable
+        map(function, starts, lengths) used to run the fits (two iterables, as map and Executor.map take them); the
+        built-in map runs them one after another. With a process pool, fit_window must be a module-level function.
 
     Returns
     -------
     list
         The result of each step of the series, from the window the plan gives it.
     """
+    windows = unique_windows(plan)
+    results = list(map(fit_window, [s for s, _ in windows], [n for _, n in windows]))     # picklable for process pools
     fits = {}
-    for s, n in unique_windows(plan):
-        res = fit_window(s, n)
+    for (s, n), res in zip(windows, results):
         if len(res) != n:
             raise ValueError(f"fit_window({s}, {n}) returned {len(res)} results for {n} steps")
         fits[(s, n)] = res

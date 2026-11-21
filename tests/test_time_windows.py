@@ -84,3 +84,27 @@ def test_assemble_takes_each_step_from_its_window():
     assert [o[:2] for o in out] == plan                           # ... from the window of the plan
     with pytest.raises(ValueError, match="returned"):
         assemble_time_windows(plan, lambda s, n: [0] * (n - 1))
+
+
+def test_assemble_in_parallel_gives_the_same_steps():
+    from concurrent.futures import ThreadPoolExecutor
+    import time
+    plan = plan_time_windows(np.full(30, 20.0), base=5, stride=3)
+
+    def fit(s, n):
+        time.sleep(0.01 * ((7 * s) % 5))          # windows finish out of order
+        return [(s, n, t) for t in range(s, s + n)]
+
+    with ThreadPoolExecutor(4) as pool:
+        assert assemble_time_windows(plan, fit, map=pool.map) == assemble_time_windows(plan, fit)
+
+
+def _fit_for_processes(s, n):
+    return [(s, n, t) for t in range(s, s + n)]
+
+
+def test_assemble_with_a_process_pool():
+    from concurrent.futures import ProcessPoolExecutor
+    plan = plan_time_windows(np.full(16, 20.0), base=5, stride=3)
+    with ProcessPoolExecutor(2) as pool:
+        assert assemble_time_windows(plan, _fit_for_processes, map=pool.map) == assemble_time_windows(plan, _fit_for_processes)
