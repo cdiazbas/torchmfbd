@@ -6,11 +6,13 @@ import torchmfbd
 @pytest.fixture
 def make_synthetic_frames():
 
-    def _synthetic_frames(config, n_seq, n_frames, sigma, seed=0, amplitude=0.5, kmax=4, contrast=0.1):
+    def _synthetic_frames(config, n_seq, n_frames, sigma, seed=0, amplitude=0.5, kmax=4, contrast=0.1, static=False):
         """
         Seeded synthetic bursts: a smooth periodic object of mean 1, blurred by known PSFs from
         Deconvolution.compute_psfs (KL modes with random coefficients) plus white Gaussian noise of
         standard deviation sigma. Returns the object (n_seq, n, n) and the frames (n_seq, n_frames, n, n).
+        With static=True all the bursts see the first object (a Sun that does not change between time steps),
+        each through its own seeing.
         """
 
         gen = torch.Generator().manual_seed(seed)
@@ -32,6 +34,8 @@ def make_synthetic_frames():
         im = torch.randn(n_seq, npix, npix, generator=gen)
         obj = torch.fft.ifft2((re + 1j * im) * support / (1.0 + kk)).real
         obj = 1.0 + contrast * obj / torch.std(obj, dim=(-1, -2), keepdim=True)
+        if static:
+            obj = obj[:1].expand(n_seq, npix, npix).clone()
 
         # compute_psfs needs the basis and the diversity bookkeeping that deconvolve() sets up:
         # one object, one diversity channel starting at frame 0
