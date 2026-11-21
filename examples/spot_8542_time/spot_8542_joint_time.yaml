@@ -45,6 +45,9 @@ regularization:
      # suits synthetic scenes, is worse than no time term at D/r0 10 (hold-out scenes: 0.396 against 0.367; 5e-4: 0.348)
      time:
         lambda : 5.0e-4
+        # SNR rule, the library's default: a step whose frames are below SNR 12 leans on a better neighbour, in
+        # proportion; on this sequence it restores the very bad step 16. 0 gives one weight for every link
+        snr_threshold : 12
      iuwt1:
         variable : object
         lambda : 0.00
