@@ -9,6 +9,19 @@ Patchify
    :undoc-members:
    :show-inheritance:
 
+Time windows
+------------
+
+.. automodule:: torchmfbd.time_windows
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Per-step SNR
+------------
+
+.. autofunction:: torchmfbd.noise.step_snr
+
 Destretch
 ---------
 
