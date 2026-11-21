@@ -93,9 +93,10 @@ def test_frequencies_without_data_are_zero(dec):
     assert torch.all(out[..., 0, 1] == 0)
 
 
-def _series_fit(make_synthetic_frames, lam_t, bad_factor=10.0, n_t=5, n_frames=5, sigma=0.005, seed=0, iterations=30):
+def _series_fit(make_synthetic_frames, lam_t, bad_factor=10.0, n_t=5, n_frames=5, sigma=0.005, seed=0, iterations=30, time_extra=None):
     """One patch, n_t time steps of the same object, each through its own seeing; the middle step has bad_factor
-    times the noise. Returns the rms error of each step's object against the truth (diffraction mask, no border)."""
+    times the noise. time_extra: more keys of the `time` regularization. Returns the rms error of each step's object
+    against the truth (diffraction mask, no border) and the index of the noisy step."""
     with open(HERE / "joint.yaml") as f:
         cfg = yaml.safe_load(f)
     cfg["optimization"]["gpu"] = -1
@@ -108,7 +109,7 @@ def _series_fit(make_synthetic_frames, lam_t, bad_factor=10.0, n_t=5, n_frames=5
     sig = sigma * torch.ones(1, n_t, n_frames)
     sig[0, bad] = sigma * bad_factor
     cfg["optimization"]["filter_loss"] = "wiener_time"
-    cfg["regularization"] = {"time": {"lambda": lam_t}}
+    cfg["regularization"] = {"time": {"lambda": lam_t, **(time_extra or {})}}
     d = torchmfbd.Deconvolution(cfg)
     d.add_frames(frames[None], sigma=sig, id_object=0, id_diversity=0, diversity=0.0)
     d.deconvolve(infer_object=False, optimizer="adam", simultaneous_sequences=200, n_iterations=iterations)

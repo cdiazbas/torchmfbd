@@ -20,7 +20,8 @@ import torchmfbd.kl_modes as kl_modes
 import torchmfbd.noise as noise
 from torchmfbd.reg_smooth import RegularizationSmooth
 from torchmfbd.reg_iuwt import RegularizationIUWT
-from torchmfbd.reg_time import RegularizationTime
+from torchmfbd.reg_time import RegularizationTime, snr_link_factors
+from torchmfbd.noise import step_snr
 import glob
 import pathlib
 import yaml
@@ -603,6 +604,9 @@ class Deconvolution(object):
 
         self.time_regularization = 0.0
         self.time_mask_window = 3
+        # SNR rule of the time weight (0: one weight for every link)
+        self.time_snr_threshold = 0.0
+        self.time_snr_reference = 'window'
         # Coupling of the wavefronts of neighbouring patches (needs set_neighbours); 0 unless a `coupling` entry sets it
         self.coupling_lambda = 0.0
         self.coupling_modes = 10
@@ -617,6 +621,14 @@ class Deconvolution(object):
                 self.time_mask_window = int(v.get('mask_window', 3))
                 if self.time_mask_window < 1 or self.time_mask_window % 2 == 0:
                     raise ValueError(f"regularization.{k}.mask_window must be a positive odd number of time steps, got {self.time_mask_window}")
+                self.time_snr_threshold = float(v.get('snr_threshold', 0.0))
+                self.time_snr_reference = str(v.get('snr_reference', 'window'))
+                if self.time_snr_threshold < 0:
+                    raise ValueError(f"regularization.{k}.snr_threshold must be >= 0 (0 switches the SNR rule off), got {self.time_snr_threshold}")
+                if self.time_snr_reference not in ('window', 'fixed'):
+                    raise ValueError(f"regularization.{k}.snr_reference must be 'window' or 'fixed', got '{self.time_snr_reference}'")
+                if self.time_snr_threshold > 0 and self.config['optimization'].get('filter_loss') == 'wiener_time_contrast':
+                    raise ValueError(f"regularization.{k}.snr_threshold needs filter_loss wiener_time: wiener_time_contrast already weights the links by the contrast")
 
         for k, v in self.config['regularization'].items():            
             if v['lambda'] != 0.0:
@@ -1572,7 +1584,10 @@ class Deconvolution(object):
         -----------
         S, D : torch.Tensor (complex)
             Shape (n_seq, M, J, Nx, Ny): the OTFs and the Fourier transformed frames.
-        Reg_Space, lambda_s, lambda_t : as in solve_object_time_evolution (lambda_t a scalar)
+        Reg_Space, lambda_s : as in solve_object_time_evolution
+        lambda_t : float or torch.Tensor
+            One weight for every link, or a real tensor (n_seq, M - 1) with the weight of each link (t, t+1) of each
+            sequence (the SNR rule of the `time` regularization).
 
         Returns:
         --------
@@ -1580,6 +1595,7 @@ class Deconvolution(object):
         """
         n_s, M, J, Nx, Ny = S.shape
         B = Nx * Ny
+        per_link = torch.is_tensor(lambda_t) and lambda_t.dim() == 2
 
         sum_S_sq_flat = torch.sum(torch.abs(S)**2, dim=2).reshape(n_s, M, B)
         RHS = torch.sum(torch.conj(S) * D, dim=2).reshape(n_s, M, B)
@@ -1588,23 +1604,36 @@ class Deconvolution(object):
         if M == 1:
             return (RHS / (sum_S_sq_flat + reg_s_flat + 1e-10)).reshape(n_s, M, Nx, Ny)
 
-        lt_max = float(lambda_t)
+        lt_max = float(lambda_t.max()) if per_link else float(lambda_t)
         w_freq = torch.sum(sum_S_sq_flat, dim=1)
         no_data = (w_freq <= 1e-6 * lt_max) | (w_freq <= 1e-10 * torch.max(w_freq, dim=1, keepdim=True).values)
         if torch.any(no_data):
             sum_S_sq_flat = torch.where(no_data[:, None, :], torch.ones_like(sum_S_sq_flat), sum_S_sq_flat)
 
         work = torch.complex64 if S.device.type == 'mps' else torch.complex128
-        a = torch.full((n_s, M - 1, B), -lambda_t, dtype=work, device=S.device)
-        c = torch.full((n_s, M - 1, B), -lambda_t, dtype=work, device=S.device)
-        d_rows = []
-        for m in range(M):
-            row = sum_S_sq_flat[:, m, :] + reg_s_flat
-            if m == 0 or m == M - 1:
-                row = row + lambda_t
-            else:
-                row = row + 2.0 * lambda_t
-            d_rows.append(row)
+        if per_link:
+            lam = lambda_t.to(device=S.device, dtype=sum_S_sq_flat.dtype)[:, :, None]        # (n_s, M - 1, 1)
+            a = (-lam).expand(n_s, M - 1, B).to(work)
+            c = a
+            d_rows = []
+            for m in range(M):
+                row = sum_S_sq_flat[:, m, :] + reg_s_flat
+                if m > 0:
+                    row = row + lam[:, m - 1]
+                if m < M - 1:
+                    row = row + lam[:, m]
+                d_rows.append(row)
+        else:
+            a = torch.full((n_s, M - 1, B), -lambda_t, dtype=work, device=S.device)
+            c = torch.full((n_s, M - 1, B), -lambda_t, dtype=work, device=S.device)
+            d_rows = []
+            for m in range(M):
+                row = sum_S_sq_flat[:, m, :] + reg_s_flat
+                if m == 0 or m == M - 1:
+                    row = row + lambda_t
+                else:
+                    row = row + 2.0 * lambda_t
+                d_rows.append(row)
 
         c_prime_list = [c[:, 0, :] / d_rows[0]]
         d_prime_list = [RHS[:, 0, :] / d_rows[0]]
@@ -1705,6 +1734,13 @@ class Deconvolution(object):
 
                 out = []
                 if self.loss_filter == 'wiener_time':
+                    snr_threshold = float(getattr(self, "time_snr_threshold", 0.0))      # set by set_regularizations
+                    if snr_threshold > 0 and self.n_t > 1:
+                        # SNR rule: a link to a step whose frames are below the threshold is weighted up, so that step
+                        # leans on its neighbours (and anchors its PSFs) instead of fitting a sharp PSF to its noise.
+                        # The SNR comes from the data alone, the same in every evaluation of the fit
+                        snr = step_snr(images_tmp.detach(), self.rho[i].to(images_tmp.device), fourier=True)
+                        lambda_t = lambda_t * snr_link_factors(snr.double(), snr_threshold, getattr(self, "time_snr_reference", "window"))
                     # All sequences at once: the same recursion per frequency, without a Python loop over the patches
                     out = [self.solve_object_time_evolution_batched(otf_tmp, images_tmp, Reg_Space, lambda_s, lambda_t)]
                 for j in range(n_seq if self.loss_filter == 'wiener_time_contrast' else 0):
