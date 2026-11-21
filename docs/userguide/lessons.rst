@@ -186,6 +186,43 @@ configuration can go below.
   near zero: +63 % on these scenes before the fix. Even computed right it only weakens the time term on the better
   steps, which is worse at D/r0 10.
 
+Very bad steps and long series
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Measured on 49-step series whose truth is the restored real sequence, with two-layer seeing that changes from step to
+step (realistic and harsh random walks of D/r0, central blocks of 5 to 47 bad steps at D/r0 20, noise 0.01 to 0.06),
+the library's configuration and LBFGS 10 (November 2026).
+
+* **Why a very bad step is lost.** With one time weight for every link, the PSF fit of a step whose frames are far
+  below the noise invents a PSF far too sharp: the power of its estimated OTFs is 27 to 73 times the true one, against
+  1.6 to 5 for a good step. The object of such a step comes out smooth, and the uniform weight cannot help: strong
+  enough to anchor the bad step, it blurs the good ones.
+* **The SNR rule** (``regularization.time.snr_threshold``, on by default) weights each link by ``12 / SNR`` of its
+  weaker step, at least 1 and at most 100, and only when a better step is within the window
+  (``snr_reference: window``). The SNR is measured on the step's own frames (``torchmfbd.step_snr``). 12 is 1/f, with
+  f ≈ 0.08 the fraction of power the Sun changes per step: a step whose noise exceeds that change should lean on its
+  neighbours. The power ratio of the bad steps' OTFs then falls to 1 to 2. Against the example as it was: better in 12
+  of 12 new series (mean −23.7 %); on the real sequence the very bad step 16 goes from a contrast of 0.065 to 0.087.
+  Between thresholds 6 and 24 the error changes by at most 3 %.
+* **Windows that do not depend on the length of the series.** Windows that start at the first step (7 every 4)
+  changed the same step by up to 31 % between a series of 49 steps and the same steps cut to 15.
+  ``torchmfbd.plan_time_windows`` places windows of 5 steps every 3 on the absolute step index, and each step is taken
+  from its own window: with the same window on the same GPU type a step comes out the same bit for bit, whatever the
+  length of the series. A step below the noise (SNR < 1) gets a window that reaches the nearest step with SNR ≥ 12,
+  at most 6 steps away (1/(2f)). Windows every step cost 2.3 times as many fits for 0.7 % less error. Only the two
+  steps at each end of a cut, and a bad step whose good neighbour is cut away, change: that is information the shorter
+  series does not have.
+* **Not useful:** chaining the windows (a two-filter smoother, or one pass of linear messages: it reproduces the
+  whole-series fit, and the whole series ties long blocks of bad steps to the good ones), a fixed threshold when every
+  step is noisy (+7.5 % at noise 0.04; the window reference fixes it), the exponent 0.5 of the rule (too weak next to a
+  good step), a Kolmogorov prior per step and a prior on the wavefront variance (−1 to −3 %, nothing once the rule is
+  on), several windows in one call (no faster, +5 to +15 %: the line search of LBFGS is shared), and 5, 10 or 40
+  inner LBFGS iterations instead of 20 (+24 to +79 %, and +9 to +26 %).
+* **The middle of a long bad block** has no information to recover (about 0.55 at the centre of a 47-step block with
+  any method), and a series made only of bad steps has no step to lean on.
+* **Reproducibility across GPUs.** The same window fitted on a T4 and on a V100S differs by up to 9 % in a single step;
+  compare methods on the same GPU type and on means over many series, never on single steps.
+
 
 Judging a result without a truth
 --------------------------------
