@@ -39,7 +39,7 @@ def make_synthetic_frames():
         dec.init_frame_diversity = [[0]]
         dec._define_basis()
 
-        # Tip-tilt is left out: deconvolve() references it to the first frame, so it would only shift the object
+        # Tip-tilt is left out: deconvolve() references it to its mean over the frames, so it would only shift the object
         modes = amplitude * torch.randn(n_seq, n_frames, dec.n_modes, generator=gen) / torch.sqrt(torch.arange(dec.n_modes) + 1.0)
         modes[:, :, 0:2] = 0.0
         psf, _ = dec.compute_psfs(modes, [torch.zeros(n_seq, n_frames)])
