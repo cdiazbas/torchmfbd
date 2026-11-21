@@ -108,3 +108,37 @@ def test_assemble_with_a_process_pool():
     plan = plan_time_windows(np.full(16, 20.0), base=5, stride=3)
     with ProcessPoolExecutor(2) as pool:
         assert assemble_time_windows(plan, _fit_for_processes, map=pool.map) == assemble_time_windows(plan, _fit_for_processes)
+
+
+def test_a_cut_series_gives_the_same_objects(make_synthetic_frames):
+    # The whole chain on a small series: plan, fit every window with the library (time term and SNR rule on), assemble.
+    # The same steps fitted as part of 9 steps or of a cut to steps 3-8 (absolute index kept) come out bit for bit the
+    # same wherever their window lies inside the cut (CPU: the same window gives the same fit)
+    from pathlib import Path
+    import torch, yaml, torchmfbd
+    with open(Path(__file__).parent / "joint.yaml") as f:
+        cfg = yaml.safe_load(f)
+    cfg["optimization"]["gpu"] = -1; cfg.pop("object2", None)
+    cfg["optimization"]["filter_loss"] = "wiener_time"
+    cfg["regularization"] = {"time": {"lambda": 5e-4}}
+    obj, frames = make_synthetic_frames(cfg, 9, 4, 0.01, seed=3, static=True)        # (9, 4, 32, 32)
+    snr = np.full(9, 20.0)
+
+    def fitter(fr_all):
+        def fit_window(s, n):
+            torch.manual_seed(0)
+            d = torchmfbd.Deconvolution(cfg)
+            d.add_frames(fr_all[s:s + n][None], sigma=0.01 * torch.ones(1, n, 4), id_object=0, id_diversity=0, diversity=0.0)
+            d.deconvolve(infer_object=False, optimizer="adam", simultaneous_sequences=10, n_iterations=8)
+            return [d.obj[0][0, t].clone() for t in range(n)]
+        return fit_window
+
+    full_plan = plan_time_windows(snr, base=3, stride=2)
+    full = assemble_time_windows(full_plan, fitter(frames))
+    a = 3
+    cut_plan = plan_time_windows(snr[a:], base=3, stride=2, t0=a)
+    cut = assemble_time_windows(cut_plan, fitter(frames[a:]))
+    same = [t for t in range(a, 9) if full_plan[t][0] >= a and (cut_plan[t - a][0] + a, cut_plan[t - a][1]) == full_plan[t]]
+    assert len(same) >= 3, same
+    for t in same:
+        assert torch.equal(full[t], cut[t - a]), t
