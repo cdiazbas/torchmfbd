@@ -310,9 +310,11 @@ A time-series window is different: a window of the time example (5 steps, 2 obje
 85.8 s on an idle T4, almost all of it element-by-element passes over the frames on the GPU (73 s of GPU time; the
 FFTs are 7 % of it). The loss computed sums, a mask and a filtered object it then threw away, and weighted frames and SNR
 weights that do not change during the fit; without them the window takes 74.4 s, the same result bit for bit. The
-fixed-pattern removal, on the CPU, runs its chunks of bursts in parallel (2.0 → 0.8 s per object). Further gains change
-the rounding: computing the PSFs once for two objects of the same wavelength saves 20 % more, rewriting |x|² as
-re² + im² or keeping the time solve's off-diagonal real does not give the same bits.
+fixed-pattern removal, on the CPU, runs its chunks of bursts in parallel (2.0 → 0.8 s per object). Two objects at the
+same wavelength (wide band and line) share their PSFs, computed once: the window takes 60.5 s. That changes the rounding
+only, the gradient of the shared PSFs being summed before the PSF chain: on 12 two-object 49-step series with a truth the
+mean object error changed by −0.10 % (wide band) and +0.05 % (line), the worst series by +1.0 %, the spread between a
+T4 and a V100S. Rewriting |x|² as re² + im² or keeping the time solve's off-diagonal real does not give the same bits.
 
 What limits the result: the PSF inside a patch
 ----------------------------------------------
