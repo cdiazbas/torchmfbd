@@ -17,6 +17,12 @@ Time windows
    :undoc-members:
    :show-inheritance:
 
+Repairing a restored series
+---------------------------
+
+.. automodule:: torchmfbd.repair
+   :members:
+
 Per-step SNR
 ------------
 

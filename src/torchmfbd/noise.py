@@ -79,3 +79,27 @@ def step_snr(frames, rho, band=(0.1, 0.3), noise_from=1.1, fourier=False):
     p_noise = power[..., noise].mean(-1)
     p_signal = power[..., signal].mean(-1)
     return ((p_signal - p_noise) / p_noise).clamp(min=1e-6)
+
+
+def step_power_ratio(frames, rho, band=(0.1, 0.3)):
+    """
+    Power of each step between band[0] and band[1] times the diffraction cutoff, relative to the median step of its
+    series. For restored objects, which carry no noise beyond the cutoff for step_snr to measure: a step that came out
+    smoother than its neighbours (a seeing residual the restoration did not remove) has a ratio below 1.
+
+    Parameters
+    ----------
+    frames : torch.Tensor
+        (n_seq, n_t, n_frames, nx, ny) 2-D FFTs of the images of each step.
+    rho : torch.Tensor
+        (nx, ny) modulus of the frequency in units of the cutoff, FFT layout.
+    band : tuple of float
+
+    Returns
+    -------
+    torch.Tensor
+        (n_seq, n_t) ratio, at least 1e-6.
+    """
+    signal = (rho > band[0]) & (rho < band[1])
+    p = torch.sum(torch.abs(frames)**2, dim=-3)[..., signal].mean(-1)
+    return (p / p.median(dim=1, keepdim=True).values).clamp(min=1e-6)

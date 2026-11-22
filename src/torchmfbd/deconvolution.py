@@ -21,7 +21,7 @@ import torchmfbd.noise as noise
 from torchmfbd.reg_smooth import RegularizationSmooth
 from torchmfbd.reg_iuwt import RegularizationIUWT
 from torchmfbd.reg_time import RegularizationTime, snr_link_factors, SNR_RULE_DEFAULT_THRESHOLD
-from torchmfbd.noise import step_snr
+from torchmfbd.noise import step_snr, step_power_ratio
 import glob
 import pathlib
 import yaml
@@ -607,6 +607,7 @@ class Deconvolution(object):
         # SNR rule of the time weight (0: one weight for every link)
         self.time_snr_threshold = SNR_RULE_DEFAULT_THRESHOLD
         self.time_snr_reference = 'window'
+        self.time_snr_source = 'frames'
         # Coupling of the wavefronts of neighbouring patches (needs set_neighbours); 0 unless a `coupling` entry sets it
         self.coupling_lambda = 0.0
         self.coupling_modes = 10
@@ -623,6 +624,9 @@ class Deconvolution(object):
                     raise ValueError(f"regularization.{k}.mask_window must be a positive odd number of time steps, got {self.time_mask_window}")
                 self.time_snr_threshold = float(v.get('snr_threshold', SNR_RULE_DEFAULT_THRESHOLD))
                 self.time_snr_reference = str(v.get('snr_reference', 'window'))
+                self.time_snr_source = str(v.get('snr_source', 'frames'))
+                if self.time_snr_source not in ('frames', 'power'):
+                    raise ValueError(f"regularization.{k}.snr_source must be 'frames' or 'power', got '{self.time_snr_source}'")
                 if self.time_snr_threshold < 0:
                     raise ValueError(f"regularization.{k}.snr_threshold must be >= 0 (0 switches the SNR rule off), got {self.time_snr_threshold}")
                 if self.time_snr_reference not in ('window', 'fixed'):
@@ -1739,7 +1743,12 @@ class Deconvolution(object):
                         # SNR rule: a link to a step whose frames are below the threshold is weighted up, so that step
                         # leans on its neighbours (and anchors its PSFs) instead of fitting a sharp PSF to its noise.
                         # The SNR comes from the data alone, the same in every evaluation of the fit
-                        snr = step_snr(images_tmp.detach(), self.rho[i].to(images_tmp.device), fourier=True)
+                        if getattr(self, 'time_snr_source', 'frames') == 'power':
+                            # restored products have no noise band beyond the cutoff: a step is scored by its power at
+                            # 0.1-0.3 of the cutoff against the median step of its series, which sits at the threshold
+                            snr = snr_threshold * step_power_ratio(images_tmp.detach(), self.rho[i].to(images_tmp.device))
+                        else:
+                            snr = step_snr(images_tmp.detach(), self.rho[i].to(images_tmp.device), fourier=True)
                         lambda_t = lambda_t * snr_link_factors(snr.double(), snr_threshold, getattr(self, "time_snr_reference", "window"))
                     # All sequences at once: the same recursion per frequency, without a Python loop over the patches
                     out = [self.solve_object_time_evolution_batched(otf_tmp, images_tmp, Reg_Space, lambda_s, lambda_t)]
