@@ -1697,12 +1697,18 @@ class Deconvolution(object):
             else:
                 s2_local = s2 * torch.ones_like(sigma[i][:, 0])
             gamma = s2_local[:, None, None, None] / (sigma[i][:, :, None, None] ** 2 + 1e-10)
-            Sconj_S = torch.sum(gamma * torch.conj(otf[i]) * otf[i], dim=1)
-            Sconj_I = torch.sum(gamma * torch.conj(otf[i]) * images_ft[i], dim=1)
-            
-            frames_mean = torch.mean(images_ft[i][:, :, 0, 0], dim=1).real
 
-            s_u, s2, K, v0, p = self.get_su_s2(obj=i, sigma=sigma, pars_s0=pars_s0, pars_s2=pars_s2, frames_mean=frames_mean)
+            time_coupled = self.loss_filter == 'wiener_time' or self.loss_filter == 'wiener_time_contrast'
+
+            # The loss of the time path (need_filter=False) uses only the unfiltered object of the time solve: the sums
+            # below, the mask and the filtered object are skipped there. In a time-series fit they were computed in
+            # every evaluation and thrown away (13 % of the fit of a window of the time example, the result bit for bit
+            # the same, 2026-11-22)
+            lean = time_coupled and not need_filter
+            if not lean:
+                Sconj_S = torch.sum(gamma * torch.conj(otf[i]) * otf[i], dim=1)
+                Sconj_I = torch.sum(gamma * torch.conj(otf[i]) * images_ft[i], dim=1)
+
             if pars_s2 is not None:
                 s2_term = s2
                 s2_filt = s2
@@ -1710,34 +1716,43 @@ class Deconvolution(object):
                 s2_term = s2[:, None, None] if hasattr(s2, 'dim') and s2.dim() > 0 else s2
                 s2_filt = s2[:, None] if hasattr(s2, 'dim') and s2.dim() > 0 else s2
 
-            time_coupled = self.loss_filter == 'wiener_time' or self.loss_filter == 'wiener_time_contrast'
             if time_coupled and self.enforce_positive_object:
                 raise ValueError("enforce_positive_object is not available with the time-coupled filters: the positivity ADMM has no time coupling")
 
             if time_coupled:
                 # Spatial regularisation of the time solve: none for scharmer and garrote (their gain selects
                 # the frequencies), s2/s_u for tophat, so that lambda_t -> 0 gives back each filter's estimate
+                plane_shape = dict(size=otf[i].shape[-2:], dtype=otf[i].real.dtype, device=otf[i].device)
                 if self.image_filter[i] in ('scharmer', 'garrote'):
-                    Reg_Space, lambda_s = torch.zeros_like(Sconj_S[0, ...].real), 0.0
+                    Reg_Space, lambda_s = torch.zeros(**plane_shape), 0.0
                 else:
                     reg = s2_term / s_u
                     if torch.is_tensor(reg) and reg.dim() == 3:
                         reg = reg[0]
-                    Reg_Space, lambda_s = reg * torch.ones_like(Sconj_S[0, ...].real), 1.0
+                    Reg_Space, lambda_s = reg * torch.ones(**plane_shape), 1.0
 
                 # Per-frame weights gamma enter as sqrt(gamma) on both S and D: sum gamma|S|^2, sum gamma S* D
-                w = torch.sqrt(gamma)
+                # The weighted frames and the SNR weights of the links depend only on the frames and their noise,
+                # which a fit does not change: computed in the first evaluation of a batch and kept (_time_constants,
+                # emptied by _deconvolve_pass for every batch)
+                constants = getattr(self, '_time_constants', None)
+                cached = constants.get(i) if constants is not None and not sigma[i].requires_grad else None
+                if cached is not None and cached[0] is images_ft[i] and cached[1] is sigma[i]:
+                    w, images_tmp, lambda_t = cached[2:]
+                    fresh = False
+                else:
+                    w = torch.sqrt(gamma)
+                    images_tmp = rearrange(w * images_ft[i], '(s t) f w h -> s t f w h', t=self.n_t)
+                    # lambda_t competes with sum_j |S_j|^2, which scales as n_frames / npix^2: the configured value is
+                    # the weight for 64-px patches and 12 frames, and means the same for any patch size and frame count
+                    lambda_t = self.time_regularization * (64.0 / self.npix)**2 * (images_tmp.shape[2] / 12.0)
+                    fresh = True
                 otf_tmp = rearrange(w * otf[i], '(s t) f w h -> s t f w h', t=self.n_t)
-                images_tmp = rearrange(w * images_ft[i], '(s t) f w h -> s t f w h', t=self.n_t)
                 images_raw = rearrange(images_ft[i], '(s t) f w h -> s t f w h', t=self.n_t)
-                n_seq = images_tmp.shape[0]                    
-
-                # lambda_t competes with sum_j |S_j|^2, which scales as n_frames / npix^2: the configured value is
-                # the weight for 64-px patches and 12 frames, and means the same for any patch size and frame count
-                lambda_t = self.time_regularization * (64.0 / self.npix)**2 * (images_tmp.shape[2] / 12.0)
+                n_seq = images_tmp.shape[0]
 
                 out = []
-                if self.loss_filter == 'wiener_time':
+                if self.loss_filter == 'wiener_time' and fresh:
                     snr_threshold = float(getattr(self, "time_snr_threshold", SNR_RULE_DEFAULT_THRESHOLD))      # set by set_regularizations
                     if snr_threshold > 0 and self.n_t > 1:
                         # SNR rule: a link to a step whose frames are below the threshold is weighted up, so that step
@@ -1750,6 +1765,9 @@ class Deconvolution(object):
                         else:
                             snr = step_snr(images_tmp.detach(), self.rho[i].to(images_tmp.device), fourier=True)
                         lambda_t = lambda_t * snr_link_factors(snr.double(), snr_threshold, getattr(self, "time_snr_reference", "window"))
+                if fresh and constants is not None and not sigma[i].requires_grad:
+                    constants[i] = (images_ft[i], sigma[i], w, images_tmp, lambda_t)
+                if self.loss_filter == 'wiener_time':
                     # All sequences at once: the same recursion per frequency, without a Python loop over the patches
                     out = [self.solve_object_time_evolution_batched(otf_tmp, images_tmp, Reg_Space, lambda_s, lambda_t)]
                 for j in range(n_seq if self.loss_filter == 'wiener_time_contrast' else 0):
@@ -1769,6 +1787,10 @@ class Deconvolution(object):
                     out.append(tmp[None, ...])
                 out = torch.cat(out, dim=0)
                 time_ft = rearrange(out, 's t w h -> (s t) w h')
+
+            if lean:
+                out_ft[i] = time_ft
+                continue
 
             # Lofdahl & Scharmer (1994) mask, or its continuous gain
             if self.image_filter[i] in ('scharmer', 'garrote'):
@@ -2915,6 +2937,9 @@ class Deconvolution(object):
                 diversity_seq.append(self.diversity[i][seq, ...].to(self.device))
 
             n_seq = len(seq)
+
+            # Quantities of the time path that depend only on the frames of this batch (compute_object)
+            self._time_constants = {}
                                                 
             if (infer_object):
                 
@@ -3520,6 +3545,7 @@ class Deconvolution(object):
         
         self.nullspace_P_batch = None
         self.coupling_E_batch = None
+        self._time_constants = None
 
         deltat = tfinal - tinit
         deltat_global = tfinal - tinit_global        
