@@ -8,8 +8,8 @@ its patch over the series, since a blur common to all steps cannot be told from 
 rule with the power of each step relative to the median step (snr_source: power). Only the weak steps are replaced.
 
 Measured on 49-step synthetic series with a known truth (2026-11-22): replacing only the steps with less than half the
-median power lowered the mean object error in 6 of 6 series (-3 to -15 %; -3 and -8 % on the two series not used to set
-the threshold); replacing every step raised it in one series by 12 %. The full method from the raw frames did about twice
+median power lowered the mean object error in 11 of 12 series (-3 to -15 %) and raised it by 1.6 % in one; on the 8
+series not used to set the threshold the mean change was -6 %. Replacing every step raised the error in one series by 12 %. The full method from the raw frames did about twice
 as well: this repairs what an old product allows, it does not replace a new reduction.
 """
 import copy

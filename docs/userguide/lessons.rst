@@ -222,6 +222,20 @@ the library's configuration and LBFGS 10 (November 2026).
   any method), and a series made only of bad steps has no step to lean on.
 * **Reproducibility across GPUs.** The same window fitted on a T4 and on a V100S differs by up to 9 % in a single step;
   compare methods on the same GPU type and on means over many series, never on single steps.
+* **Warping along the measured motion does not help yet.** Measuring the flow of each step against the window's mean
+  geometry (``torchmfbd.destretch``), warping the frames, fitting and warping back lowers the error of a texture that only
+  moves (−22 % at 1 px per step, −28 % at 2.24), but with the real solar evolution it is worse in 4 of 6 series (mean
+  +0.7 %; +1.4 % with a constant velocity per window) and the real sequence flickers more (0.107 to 0.121), at 3 to 6
+  times the time. Restored objects that evolve read as 0.2 to 0.5 px of motion per window, as much as a texture moving
+  1 px per step, so the measured flow cannot tell evolution from motion. Compensating only the windows that read more
+  than 0.6 px kept −21 % at 2.24 and 3 px per step on new sets and left 6 new slow series as they were (mean +0.1 %).
+* **Repairing a series restored without time term** (``torchmfbd.repair_series``), when only the restored objects are
+  left: the objects are deconvolved again with the time path, one frame per step, with the SNR rule fed by each step's
+  power relative to the median step (``snr_source: power``), blurred back with the patch's mean OTF over the series, and
+  only the steps with less than half the median power are replaced. On 12 synthetic series with a truth it lowered the
+  error in 11 (−3 to −15 %) and raised it by 1.6 % in one; replacing every step raised it by 12.5 % in one series. The full method from the raw
+  frames does about twice as well. On the real sequence the very bad step 16 comes within 0.115 of the full method
+  (0.548 before) in 38 s.
 
 
 Judging a result without a truth
