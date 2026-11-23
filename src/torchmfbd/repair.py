@@ -2,15 +2,24 @@
 
 Old reductions often keep only the restored objects, one per time step, fitted step by step. A step whose seeing was much
 worse than its neighbours' then comes out smoother: its PSF fit absorbed part of the blur. Without the raw frames that
-step can only borrow from its neighbours. repair_series deconvolves the series of objects again with the time path, one
-"frame" per step, and removes only the blur that differs between steps: every step is blurred back with the mean OTF of
-its patch over the series, since a blur common to all steps cannot be told from the Sun. Steps are weighted by the SNR
-rule with the power of each step relative to the median step (snr_source: power). Only the weak steps are replaced.
+step can only borrow from its neighbours. The weak steps (power at 0.1-0.3 of the cutoff below a fraction of the median
+step) are found from the objects alone, and only those are replaced, in one of two ways:
 
-Measured on 49-step synthetic series with a known truth (2026-11-22): replacing only the steps with less than half the
-median power lowered the mean object error in 11 of 12 series (-3 to -15 %) and raised it by 1.6 % in one; on the 8
-series not used to set the threshold the mean change was -6 %. Replacing every step raised the error in one series by 12 %. The full method from the raw frames did about twice
-as well: this repairs what an old product allows, it does not replace a new reduction.
+- 'interpolate' (default): the weak step becomes the linear interpolation in time between the nearest steps that are not
+  weak, scaled to the weak step's own mean.
+- 'deconvolve': the series of objects is deconvolved again with the time path, one "frame" per step, and only the blur
+  that differs between steps is removed: every step is blurred back with the mean OTF of its patch over the series, since
+  a blur common to all steps cannot be told from the Sun. Steps are weighted by the SNR rule with the power of each step
+  relative to the median step (snr_source: power).
+
+Measured on 49-step synthetic series with a known truth (2026-11-22), 'deconvolve' on the weak steps only lowered the
+mean object error in 11 of 12 series (-3 to -15 %) and raised it by 1.6 % in one; replacing every step raised it by 12 %
+in one series. On CHROMIS 2025-07-07 MOMFBD products at 11.9 s cadence (2026-11-23), with the damage of the real bad steps
+19-23 put on runs of good steps (the originals as truth), the interpolation was closer to the truth than a deconvolution
+of this kind (a prototype that also removed the mosaic offsets and renormalised the rings), at any time weight from 1.5e-5
+to 6e-3, in all 8 cases of runs of 1 or 3 bad steps (by 5 to 52 %). The deconvolution won only on runs of 5 blurred
+steps with a weight of 5e-5, a weight that on the real run 19-23 let the mosaic edges of the bad steps through. The full method from the raw frames does about twice as well as either: this repairs what an old product
+allows, it does not replace a new reduction.
 """
 import copy
 import numpy as np
@@ -27,7 +36,24 @@ def _cutoff_rho(config, n):
     return torch.tensor(np.hypot(*np.meshgrid(f, f, indexing='ij')) / cutoff)
 
 
-def repair_series(objects, config, weak_fraction=0.5, stride=None, n_iterations=10):
+def _interpolate(x, weak):
+    """Every weak step replaced by the linear interpolation in time of the nearest steps that are not weak (the nearest
+    one beyond the ends of the series), each step taken over its mean, and scaled back to the weak step's own mean."""
+    good = np.flatnonzero(~weak)
+    mu = x.mean(axis=(-1, -2))
+    xn = x / mu[:, None, None]
+    out = x.copy()
+    for t in np.flatnonzero(weak):
+        before, after = good[good < t], good[good > t]
+        if before.size and after.size:
+            a, b = before[-1], after[0]
+            out[t] = mu[t] * (xn[a] + (xn[b] - xn[a]) * (t - a) / (b - a))
+        else:
+            out[t] = mu[t] * xn[before[-1] if before.size else after[0]]
+    return out
+
+
+def repair_series(objects, config, weak_fraction=0.5, method='interpolate', stride=None, n_iterations=10):
     """
     Repair the weak steps of a series restored without time term.
 
@@ -36,25 +62,43 @@ def repair_series(objects, config, weak_fraction=0.5, stride=None, n_iterations=
     objects : array (n_t, n, n)
         The restored object of every time step (one object, one field).
     config : dict
-        A torchmfbd configuration for the patches (images.n_pixel, telescope, object1.wavelength, psf, optimization); its
-        time weight is used, the time path and the SNR rule are set here.
+        A torchmfbd configuration: telescope, object1.wavelength and images.pix_size give the cutoff that finds the weak
+        steps. With method 'deconvolve' also the patches (images.n_pixel, psf, optimization); its time weight is used,
+        the time path and the SNR rule are set here.
     weak_fraction : float
         A step is repaired when its power at 0.1-0.3 of the cutoff is below this fraction of the median step.
+    method : str
+        'interpolate' (default): linear interpolation in time between the nearest steps that are not weak.
+        'deconvolve': the series deconvolved again with the time path (see the module).
     stride : int or None
-        Stride of the patches; None takes the one closest to 32 px that tiles the field exactly.
+        'deconvolve' only: stride of the patches; None takes the one closest to 32 px that tiles the field exactly.
     n_iterations : int
-        LBFGS iterations.
+        'deconvolve' only: LBFGS iterations.
 
     Returns
     -------
     repaired : numpy.ndarray (n_t, m, m)
-        The series on the unpatchified field (m <= n, centred), the weak steps replaced.
+        The series, the weak steps replaced. 'interpolate' keeps the whole field (m = n); 'deconvolve' returns the
+        unpatchified field (m <= n, centred).
     weak : numpy.ndarray (n_t,) of bool
         The steps that were replaced.
     """
-    import torchmfbd
+    if method not in ('interpolate', 'deconvolve'):
+        raise ValueError(f"method must be 'interpolate' or 'deconvolve', not {method!r}")
     x = np.asarray(objects, dtype='float64')
     n_t, n = x.shape[0], x.shape[-1]
+
+    # power of every step relative to the median step: the steps to repair
+    rho_full = _cutoff_rho(config, n).numpy()
+    band = (rho_full > 0.1) & (rho_full < 0.3)
+    power = np.array([(np.abs(np.fft.fft2(s - s.mean()))**2)[band].mean() for s in x])
+    weak = power / np.median(power) < weak_fraction
+    if weak.all():
+        raise ValueError('every step is weak: there is no step to repair the others from')
+    if method == 'interpolate':
+        return _interpolate(x, weak), weak
+
+    import torchmfbd
     npix = int(config['images']['n_pixel'])
     if stride is None:
         k = max(1, int(round((n - npix) / 32.0)))
@@ -69,12 +113,6 @@ def repair_series(objects, config, weak_fraction=0.5, stride=None, n_iterations=
     time_cfg.setdefault('lambda', 5e-4)
     time_cfg.update(snr_threshold=12.0, snr_reference='window', snr_source='power')
     reg['time'] = time_cfg
-
-    # power of every step relative to the median step: the steps to repair
-    rho_full = _cutoff_rho(cfg, n).numpy()
-    band = (rho_full > 0.1) & (rho_full < 0.3)
-    power = np.array([(np.abs(np.fft.fft2(s - s.mean()))**2)[band].mean() for s in x])
-    weak = power / np.median(power) < weak_fraction
 
     patchify = torchmfbd.Patchify4D()
     fr = torch.tensor(x / x.mean(axis=(-1, -2), keepdims=True), dtype=torch.float32)

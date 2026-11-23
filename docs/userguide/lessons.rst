@@ -232,12 +232,18 @@ the library's configuration and LBFGS 10 (November 2026).
   1 px per step, so the measured flow cannot tell evolution from motion. Compensating only the windows that read more
   than 0.6 px kept −21 % at 2.24 and 3 px per step on new sets and left 6 new slow series as they were (mean +0.1 %).
 * **Repairing a series restored without time term** (``torchmfbd.repair_series``), when only the restored objects are
-  left: the objects are deconvolved again with the time path, one frame per step, with the SNR rule fed by each step's
-  power relative to the median step (``snr_source: power``), blurred back with the patch's mean OTF over the series, and
-  only the steps with less than half the median power are replaced. On 12 synthetic series with a truth it lowered the
-  error in 11 (−3 to −15 %) and raised it by 1.6 % in one; replacing every step raised it by 12.5 % in one series. The full method from the raw
-  frames does about twice as well. On the real sequence the very bad step 16 comes within 0.115 of the full method
-  (0.548 before) in 38 s.
+  left: only the steps with less than half the median power are replaced. By default (``method='interpolate'``) a weak
+  step becomes the linear interpolation in time of its nearest good neighbours. With ``method='deconvolve'`` the objects
+  are deconvolved again with the time path, one frame per step, with the SNR rule fed by each step's power relative to
+  the median step (``snr_source: power``), and blurred back with the patch's mean OTF over the series. On 12 synthetic
+  series with a truth the deconvolution lowered the error in 11 (−3 to −15 %) and raised it by 1.6 % in one; replacing
+  every step raised it by 12.5 % in one series. On real CHROMIS products at 11.9 s cadence, with the damage of real bad
+  steps put on good ones, the interpolation was closer to the truth than such a deconvolution at any time weight in all
+  8 cases of runs of 1 or 3 bad steps (by 5 to 52 %); the deconvolution won only on runs of 5 blurred steps with a
+  weight 100 times lower, which on the real bad run let its mosaic edges through. Replacing every step of the real
+  series smoothed the Sun in time (contrast of the good steps 0.148 to 0.140) and jumped at the window seams. The full
+  method from the raw frames does about twice as well as either. On the real CRISP sequence the very bad step 16 comes
+  within 0.115 of the full method (0.548 before) with the deconvolution, in 38 s.
 
 
 Judging a result without a truth
