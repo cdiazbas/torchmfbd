@@ -199,11 +199,13 @@ the library's configuration and LBFGS 10 (November 2026).
   enough to anchor the bad step, it blurs the good ones.
 * **The SNR rule** (``regularization.time.snr_threshold``, on by default) weights each link by ``12 / SNR`` of its
   weaker step, at least 1 and at most 100, and only when a better step is within the window
-  (``snr_reference: window``). The SNR is measured on the step's own frames (``torchmfbd.step_snr``). 12 is 1/f, with
-  f ≈ 0.08 the fraction of power the Sun changes per step: a step whose noise exceeds that change should lean on its
-  neighbours. The power ratio of the bad steps' OTFs then falls to 1 to 2. Against the example as it was: better in 12
+  (``snr_reference: window``). The SNR is measured on the step's own frames (``torchmfbd.step_snr``). 12 is a
+  constant. It was read as 1/f, with f ≈ 0.08 the fraction of power the Sun changes per step in the CRISP 8542 sequence,
+  but on synthetic bursts with f from 0.024 to 0.16 thresholds 6 to 48 did alike with no trend in f; what matters is
+  that the rule is on (with one step at D/r0 20, switching it off doubled that step's error in one series). The power ratio of the bad steps' OTFs then falls to 1 to 2. Against the example as it was: better in 12
   of 12 new series (mean −23.7 %); on the real sequence the very bad step 16 goes from a contrast of 0.065 to 0.087.
-  Between thresholds 6 and 24 the error changes by at most 3 %.
+  Between thresholds 6 and 48 the error changes by −3.6 to +6.4 %, and the weight from ×0.25 to ×4 by 3 to 8 %, except
+  too little weight with 6 frames (+25 %).
 * **Windows that do not depend on the length of the series.** Windows that start at the first step (7 every 4)
   changed the same step by up to 31 % between a series of 49 steps and the same steps cut to 15.
   ``torchmfbd.plan_time_windows`` places windows of 5 steps every 3 on the absolute step index, and each step is taken

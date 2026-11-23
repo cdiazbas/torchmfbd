@@ -13,8 +13,9 @@ class RegularizationTime(Regularization):
         # placeholder and must not be added as a loss term that silently contributes zero
         raise NotImplementedError("RegularizationTime has no loss term: use filter_loss wiener_time with a `time` regularization entry")
 
-# Threshold of the SNR rule when the time regularization does not give one: 1/f, with f ~ 0.08 the fraction of power the
-# Sun changes per step in the CRISP 8542 sequence. On by default since the validation of 2026-11-21: better than one
+# Threshold of the SNR rule when the time regularization does not give one. A constant: read once as 1/f (f ~ 0.08 the
+# fraction of power the Sun changes per step in the CRISP 8542 sequence), but thresholds 6 to 48 did alike for f 0.024 to
+# 0.16 with no trend in f (2026-11-23). On by default since the validation of 2026-11-21: better than one
 # weight in 12 of 12 new 49-step series (mean -23.7 %) and the same as the reference restoration on the real sequence.
 # snr_threshold: 0 in the configuration gives one weight for every link, as before.
 SNR_RULE_DEFAULT_THRESHOLD = 12.0
@@ -32,8 +33,8 @@ def snr_link_factors(snr, threshold, reference='window', cap=SNR_RULE_CAP):
     the threshold listens to its neighbours in proportion to how far below it is. With reference='window' the
     threshold is min(threshold, the best SNR of the series): a step is weak only next to a better one it can lean on,
     so a series in which every step is noisy is not tied harder than its data warrant. With reference='fixed' the
-    threshold is used as it is. The threshold 12 used by default is 1/f, with f ~ 0.08 the fraction of power the Sun
-    changes from one step to the next in the CRISP 8542 sequence (measured 2026-11-20).
+    threshold is used as it is. The threshold 12 used by default is a constant: 6 to 48 did alike on synthetic bursts whose
+    Sun changes 0.024 to 0.16 of its power per step, with no trend in that change (measured 2026-11-23).
 
     Parameters
     ----------
