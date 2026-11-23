@@ -658,7 +658,7 @@ class Deconvolution(object):
         """
         Declare which sequences are neighbouring patches of the same field, for the `coupling` regularization:
         lambda * sum over the pairs (p, q) and the frames of ||theta_p - theta_q||^2 over the first n_modes wavefront
-        coefficients (tip-tilt referred to the first frame), in the normalisation of the joint loss (divided by the
+        coefficients (tip-tilt referred to its mean over the frames), in the normalisation of the joint loss (divided by the
         number of sequences of the batch and by (n_pixel - 1)^2). Neighbouring patches see almost the same low-order
         seeing; the term lets them differ where the data ask for it.
 
@@ -2111,7 +2111,7 @@ class Deconvolution(object):
     def psfs_from_parameters(self, modes, diversity, n_active, jitter=None, shift=None):
         """
         PSFs and OTFs from the fitted parameters, built as the closure builds them: the first
-        n_active modes, tip-tilt referenced to frame 0 (and zeroed if psf.remove_tt) for the
+        n_active modes, tip-tilt referenced to its mean over the frames (and zeroed if psf.remove_tt) for the
         wavefront models, VAE shifts referenced to frame 0.
 
         Parameters
@@ -2128,7 +2128,7 @@ class Deconvolution(object):
         """
         if self.psf_model.lower() in ['zernike', 'kl']:
             modes_centered = modes.clone()
-            modes_centered[:, :, 0:2] = modes_centered[:, :, 0:2] - modes[:, 0:1, 0:2]
+            modes_centered[:, :, 0:2] = modes_centered[:, :, 0:2] - modes[:, :, 0:2].mean(dim=1, keepdim=True)
             if self.remove_tt:
                 modes_centered[:, :, 0:2] = 0.0
             return self.compute_psfs(modes_centered[..., 0:n_active], diversity, jitter=jitter)
@@ -2694,7 +2694,7 @@ class Deconvolution(object):
         P_seq, kept = [], []
         for i_seq, seq in enumerate(ind):
             modes = self.modes_seq[i_seq].double().to(self.device)
-            modes[:, :, 0:2] = modes[:, :, 0:2] - modes[:, 0:1, 0:2].clone()
+            modes[:, :, 0:2] = modes[:, :, 0:2] - modes[:, :, 0:2].mean(dim=1, keepdim=True)
             otf = torch.fft.fft2(self.psf_seq[i_seq][0].to(self.device), norm='ortho')
             with torch.no_grad():
                 _, obj_ft, _ = self.compute_object([self.frames_ft[0][seq, ...].to(self.device)], [otf],
@@ -3262,9 +3262,11 @@ class Deconvolution(object):
 
                     if self.psf_model.lower() in ['zernike', 'kl']:
                 
-                        # Compute PSF from current wavefront coefficients and reference 
+                        # Compute PSF from current wavefront coefficients, tip-tilt referenced to its mean over the
+                        # frames (as MOMFBD): a common shift of all PSFs is a shift of the object, and anchoring it to
+                        # one frame would put that frame's local image motion into the object of each patch
                         modes_centered = modes.clone()
-                        modes_centered[:, : , 0:2] = modes_centered[:, :, 0:2] - modes[:, 0:1, 0:2]
+                        modes_centered[:, : , 0:2] = modes_centered[:, :, 0:2] - modes[:, :, 0:2].mean(dim=1, keepdim=True)
 
                         if self.remove_tt:
                             modes_centered[:, :, 0:2] = 0.0
