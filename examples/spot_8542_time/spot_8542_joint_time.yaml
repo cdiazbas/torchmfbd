@@ -5,7 +5,10 @@ telescope:
 # The configuration of examples/spot_8542/kl.yaml (128-px patches, joint loss, coupling of neighbouring patches) with
 # the time term. On the real-time scenes of benchmarks/ (this sequence degraded with known two-layer seeing, D/r0 5 and
 # 10) it gives an object error of 0.279, against 0.395 with the earlier settings of this example (92-px patches, Adam
-# 50, fixed s_u_joint, wiener_time_contrast).
+# 50, fixed s_u_joint, wiener_time_contrast). The script cuts the patches every 64 px: against every 32 px, 2.4 times
+# faster on 6 synthetic 15-step series with a known truth (mean object error +0.45 %, worst +2.1 %), and on real CHROMIS
+# data 2.6-2.9 times faster with no visible difference (2026-11-23). The coupling stays 30 with stride 64 (100: +1.4 to
+# +4.2 % on the same series).
 images:
     n_pixel : 128
     pix_size : 0.059

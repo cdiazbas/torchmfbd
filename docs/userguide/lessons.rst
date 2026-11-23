@@ -178,6 +178,14 @@ configuration can go below.
   7 steps of the real sequence (25 patches, 2 objects, LBFGS 10) takes 31 s instead of 215 s on a V100S, with the same
   objects bit for bit, and ``examples/spot_8542_time`` takes 6 min 50 s for its 49 steps instead of 41 min. Fewer
   iterations do not pay: 8 instead of 10 save 20 % of the time and cost 7 % of object error.
+* **Patches every 64 pixels in the time path** (the time example since 2026-11-23): 2.4 times faster than every 32 on
+  6 synthetic 15-step series with a known truth (mean object error +0.45 %, worst +2.1 %, coupling kept at 30; with
+  100, +1.4 to +4.2 %), and 2.6 to 2.9 times faster with no visible difference on real CHROMIS wide-band and Ca II K
+  data. Measured on the same series and not worth it: the time solve in complex64 (6 % faster, up to +1.3 %), windows
+  every 5 steps instead of 3 (1.6 times faster, −5.6 to +4.0 %), fewer LBFGS evaluations (inner 10 or 5, outer 5: +7 to
+  +78 %), 30 outer iterations (much worse: overfitting), and starting a window from the modes its steps had in the
+  previous one (no gain at 10 iterations; at 5 it loses as much as a cold start). The 128 cores of a 2 × EPYC 7742 give about a third
+  of a V100S: the fit is bound by memory bandwidth (elementwise products and dtype copies, not the FFTs).
 * **Not useful here:** a window of 8 steps instead of two of 4 (+2.7 %), stride 16 (−0.3 % at 3 times the time),
   more iterations (+19 %), 96-pixel patches (+16 %), no coupling (+5 %) or coupling 100 (+3 %), ``mask_window`` 1 or
   5 (±2 %), and a mean high-order halo in the OTF (+4.7 %, even with the true D/r0). ``s_u_joint`` has no effect

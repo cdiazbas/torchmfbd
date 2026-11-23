@@ -74,7 +74,7 @@ if __name__ == '__main__':
         # Patchify and add the frames
         frames_patches = [None] * 2
         for i in range(2):
-            frames_patches[i] = patchify.patchify(fr[:, i, :, :, :], patch_size=128, stride_size=32, flatten_sequences=not keep_time)   # n_pixel of the yaml
+            frames_patches[i] = patchify.patchify(fr[:, i, :, :, :], patch_size=128, stride_size=64, flatten_sequences=not keep_time)   # n_pixel of the yaml; stride 64: see the yaml
             if keep_time:
                 decSI.add_frames(frames_patches[i].transpose(0, 1), id_object=i, id_diversity=0, diversity=0.0, sigma=0.015)
             else:
@@ -83,7 +83,7 @@ if __name__ == '__main__':
         # For the coupling regularization of the yaml: with time, the sequences of the 5-D data are the patches of
         # one image, so the pairs are those of a single step (the coupling acts within each step)
         one_step = torchmfbd.Patchify4D()
-        one_step.patchify(fr[0:1, 0, :, :, :], patch_size=128, stride_size=32, flatten_sequences=True)
+        one_step.patchify(fr[0:1, 0, :, :, :], patch_size=128, stride_size=64, flatten_sequences=True)
         decSI.set_neighbours(one_step.neighbours())
         n_patches = one_step.n_patches
         last['config'] = decSI.config
