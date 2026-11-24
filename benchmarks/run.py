@@ -54,6 +54,9 @@ def fit_scene(sc, base, a):
     frames = sc["frames"]
     fr = torch.tensor((frames / frames.mean(axis=(-1, -2), keepdims=True))[None].astype("float32"))
     pt = P4.patchify(fr, patch_size=a.patch, stride_size=a.stride, flatten_sequences=True, follow_motion=a.follow_motion)
+    # with follow_motion, the rms of the whole-pixel shifts it measured (per axis): the frame motion as the data show it
+    # (taken here: the patchify of the truth below resets motion_shifts)
+    motion_rms = float(P4.motion_shifts.float().pow(2).mean().sqrt()) if P4.motion_shifts is not None else None
     torch.manual_seed(a.seed)
     t0 = time.time()
     d = torchmfbd.Deconvolution(conf); d.logger.setLevel(logging.ERROR)
@@ -85,7 +88,7 @@ def fit_scene(sc, base, a):
         tp = np.stack([shifted(q, sh) for q, sh in zip(true_psfs, sc["shifts"])])
     else:                                                                        # (patches, frames, m, m)
         tp = np.stack([np.stack([shifted(q, sh) for q, sh in zip(qp, sc["shifts"])]) for qp in true_psfs])
-    row = dict(scene=sc["name"], time_fit=t_fit, n_patches=int(pt.shape[0]),
+    row = dict(scene=sc["name"], time_fit=t_fit, n_patches=int(pt.shape[0]), motion_rms=motion_rms,
                err_obj=M.object_error(o, tr), err_obj_bestscale=M.object_error_bestscale(o, tr), band_err=M.band_error(o, tr),
                err_psf=M.psf_error(pe, true_psfs), err_transfer=M.transfer_error(pe, np.fft.fft2(tp), tpp.numpy()))
     # control: the object from the true OTFs, with the run's own noise and (marginal loss) spectrum parameters
@@ -262,7 +265,7 @@ def main():
     p.add_argument("--seq", help="the time sequence file, for the real-time set")
     p.add_argument("--no-control", action="store_true")
     p.add_argument("--half-spectrum", action="store_true", help="optimization.half_spectrum: the joint loss on half of the spectrum")
-    p.add_argument("--follow-motion", type=int, default=0, help="patchify follow_motion: re-cut each frame where it moved (max px)")
+    p.add_argument("--follow-motion", type=int, default=0, help="patchify follow_motion: re-cut each frame where it moved (max px; 0: off)")
     p.add_argument("--motion-scale", type=float, default=1.0, help="scale the scenes' frame-to-frame motion (1: sigma 1.5 px)")
     p.add_argument("--holdout", action="store_true", help="the hold-out scenes (other seeds): to confirm a choice")
     p.add_argument("--only", help="comma list of scene-name prefixes to keep (a quick screen)")

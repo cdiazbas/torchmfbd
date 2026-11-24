@@ -20,10 +20,10 @@ class Patchify4D(object):
         frames of the patch (means removed), limited to +-max_shift; the frame is then cut from the frames padded by
         reflection, so that the window covers the same piece of the scene in every frame.
 
-        On the benchmark with 4 times its frame motion (integer shifts, sigma 6 px per axis) the library's object error
-        is 0.350 with the fixed cutout and 0.247 with this one (-19.8 %, 51/55 scenes; -21.8 %, 53/55 on the hold-out
-        scenes). With the benchmark's own motion (sigma 1.5 px) it is neutral (+1.5 %), at twice it -3.0 % (not
-        significant). The example's 8542 burst moves 0.14-0.28 px rms between frames: there it is not needed.
+        On the 55 benchmark scenes (128-px patches, stride 32, V100S), against the fixed cutout, with max_shift 5 / 10:
+        frame motion 0 px +0.2 / +1.3 %, 1.5 px -0.2 / -0.4 %, 3 px -5.0 / -5.2 %, 4.5 px -14.1 / -14.3 %, 6 px
+        -18.8 / -20.1 % (52/55); at 6 px also -21.8 % on the hold-out scenes. 5 is MOMFBD's default MAX_LOCAL_SHIFT
+        (the examples do not use it: their 8542 burst moves 0.14-0.28 px rms between frames).
 
         Args:
             x (torch.Tensor): frames (n_batch, n_frames, nx, ny).
@@ -44,6 +44,15 @@ class Patchify4D(object):
         sy = torch.where(sy > K // 2, sy - K, sy)
         sx = torch.where(sx > K // 2, sx - K, sx)
         dy, dx = (-sy).clamp(-m, m), (-sx).clamp(-m, m)
+        self.motion_shifts = torch.stack([dy, dx], dim=-1)
+        return self._cut(x, dy, dx, m)
+
+    def _cut(self, x, dy, dx, m):
+        """The K x K patches of the frames x (n_batch, n_frames, nx, ny) cut at the grid position plus (dy, dx), each of
+        shape (n_batch, n_patches, n_frames), from the frames padded by reflection by m >= max |shift| pixels."""
+        B, Fr = x.shape[0], x.shape[1]
+        L, K = dy.shape[1], self.K
+        dev = x.device
         xp = F.pad(x, (m, m, m, m), mode='reflect')
         li = torch.arange(L, device=dev)
         y0, x0 = (li // self.Ly) * self.S, (li % self.Ly) * self.S
@@ -52,10 +61,10 @@ class Patchify4D(object):
         cols = (x0[None, :, None] + dx + m)[..., None, None] + ar[None, :]
         bi = torch.arange(B, device=dev)[:, None, None, None, None]
         fi = torch.arange(Fr, device=dev)[None, None, :, None, None]
-        self.motion_shifts = torch.stack([dy, dx], dim=-1)
         return xp[bi, fi, rows, cols]
 
-    def patchify(self, x, patch_size=64, stride_size=64, flatten_sequences=True, return_coordinates=False, follow_motion=0):
+    def patchify(self, x, patch_size=64, stride_size=64, flatten_sequences=True, return_coordinates=False, follow_motion=0,
+                 motion_shifts=None):
         """
         Splits the input tensor into patches.
         Args:
@@ -64,6 +73,11 @@ class Patchify4D(object):
                 cut again where that frame moved: at the whole-pixel shift, at most follow_motion pixels, that registers
                 it to the mean of the frames of the patch (see _follow_motion). The patch grid, and so unpatchify, do not
                 change; the shifts are kept in self.motion_shifts.
+            motion_shifts (torch.Tensor, optional): shifts (n_batch, n_patches, n_frames, 2) to cut with, instead of
+                estimating them: the motion_shifts of a previous call. Objects that share the wavefront (the cameras of
+                a burst, the channels of phase diversity) must be cut with the SAME shifts, or no common tip-tilt fits
+                them: estimate on one and pass its motion_shifts to the others. On the example's 8542 burst the two
+                cameras, estimated separately, disagree on 9.5 % of the (patch, frame) shifts.
         """
         self.batch_shape = x.shape[:-3]
         self.n_frames, self.nx, self.ny = x.shape[-3:]
@@ -99,9 +113,16 @@ class Patchify4D(object):
         self.n_patches = x_unfold.shape[-1]
 
         self.motion_shifts = None
-        if follow_motion > 0:
+        if follow_motion > 0 or motion_shifts is not None:
             p = rearrange(x_unfold, 'b (f x y) L -> b L f x y', x=self.K, y=self.K)
-            p = self._follow_motion(x_flat, p, int(follow_motion))
+            if motion_shifts is not None:
+                ms = torch.as_tensor(motion_shifts, device=x_flat.device).long()
+                if tuple(ms.shape) != (p.shape[0], p.shape[1], p.shape[2], 2):
+                    raise ValueError(f"motion_shifts has shape {tuple(ms.shape)}, the patches need {(p.shape[0], p.shape[1], p.shape[2], 2)}")
+                p = self._cut(x_flat, ms[..., 0], ms[..., 1], max(int(ms.abs().max()), 1))
+                self.motion_shifts = ms
+            else:
+                p = self._follow_motion(x_flat, p, int(follow_motion))
             x_unfold = rearrange(p, 'b L f x y -> b (f x y) L')
         
         if self.flatten_sequences:            

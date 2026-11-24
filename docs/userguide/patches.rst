@@ -35,10 +35,34 @@ grid, and so ``unpatchify``, do not change; the shifts are kept in ``patchify.mo
 
 ::
 
-    patches = patchify.patchify(frames, patch_size=128, stride_size=32, flatten_sequences=True, follow_motion=10)
+    patches = patchify.patchify(frames, patch_size=128, stride_size=32, flatten_sequences=True, follow_motion=5)
 
-On the benchmark scenes with frames moving by 6 px rms it lowers the object error by 20 %; with motion below about 2 px it
-does not help. Measure the motion of the data first: the example's 8542 burst moves by 0.14-0.28 px rms between frames.
+On the 55 benchmark scenes (one object, 128-px patches, stride 32), against the fixed cutout, as a function of the frame
+motion (rms per axis):
+
+======== ======================= =======================
+motion   ``follow_motion=5``      ``follow_motion=10``
+======== ======================= =======================
+0 px     +0.2 %                  +1.3 %
+1.5 px   -0.2 %                  -0.4 %
+3 px     -5.0 %                  -5.2 %
+4.5 px   -14.1 %                 -14.3 %
+6 px     -18.8 %                 -20.1 %
+======== ======================= =======================
+
+5 is MOMFBD's default largest local shift. It costs about 40 ms on a GPU for the example's burst. Two cautions before
+using it with several objects:
+
+* objects that share the wavefront (the cameras of a burst, the channels of phase diversity) must be cut with the same
+  shifts: estimate them on one (``patchify.motion_shifts``) and pass them to the others with ``motion_shifts=``.
+  Estimated separately, the two cameras of the example's burst disagree on 9.5 % of the shifts, by up to 2 px.
+* the coupling of neighbouring patches (``regularization.coupling``) includes the tip-tilt, and neighbouring patches
+  can get different whole-pixel shifts for the same frame (9 % on the example's burst, 21-31 % with 6-px motion).
+  The combination is not measured yet.
+
+The examples do not use it: the example's 8542 burst moves by 0.14-0.28 px rms between frames. The default of
+``patchify`` stays 0: it also cuts masks, coordinates and other data for which a re-cut has no meaning, and with it
+``unpatchify`` no longer returns the frames.
 
 The patches can be unpatchified using the ``unpatchify`` method:
 
