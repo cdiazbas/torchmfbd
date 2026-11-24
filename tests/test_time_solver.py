@@ -136,3 +136,47 @@ def test_time_fit_accuracy_bar(make_synthetic_frames):
     # (CPU, torch 2.7.0; seeds 1 and 2 give 0.0233 and 0.0207) times 1.2: it catches a large degradation, not the drift between torch versions
     err, _ = _series_fit(make_synthetic_frames, 0.05)
     assert err.mean() < 0.0232 * 1.2, f"mean object error {err.mean():.5f}, bar {0.0232} x 1.2"
+
+
+def _ramped_series(make_synthetic_frames, lam_t, link_plane, monkeypatch, n_t=4, n_frames=5, sigma=0.005, seed=0):
+    """A Sun that does not change, seen through a gradient that does (transparency, a limb, scattered light): each step
+    multiplies its frames by its own ramp. remove_gradient_apodization on; link_plane False takes the plane out of the
+    time link, as before. Returns the restored objects (n_t, n, n) without the apodization border."""
+    with open(HERE / "joint.yaml") as f:
+        cfg = yaml.safe_load(f)
+    cfg["optimization"]["gpu"] = -1
+    cfg["images"]["remove_gradient_apodization"] = True
+    cfg.pop("object2", None)
+    obj, frames = make_synthetic_frames(cfg, n_t, n_frames, sigma, seed=seed, static=True)
+    n = frames.shape[-1]
+    x = torch.linspace(-0.5, 0.5, n)
+    for t in range(n_t):
+        frames[t] = frames[t] * (1.0 + 0.2 * (t - (n_t - 1) / 2) / n_t * x[None, None, :])
+    cfg["optimization"]["filter_loss"] = "wiener_time"
+    cfg["regularization"] = {"time": {"lambda": lam_t, "snr_threshold": 0}}
+    with monkeypatch.context() as m:
+        if not link_plane:
+            m.setattr(torchmfbd.Deconvolution, "plane_spectrum", lambda self, plane, i: None)
+        torch.manual_seed(0)
+        d = torchmfbd.Deconvolution(cfg)
+        d.add_frames(frames[None], sigma=sigma * torch.ones(1, n_t, n_frames), id_object=0, id_diversity=0, diversity=0.0)
+        d.deconvolve(infer_object=False, optimizer="adam", simultaneous_sequences=200, n_iterations=10)
+    b = d.npix_apod
+    return d.obj[0][0].cpu()[:, b:-b, b:-b]
+
+
+def test_time_link_without_weight_keeps_the_objects(make_synthetic_frames, monkeypatch):
+    # O_t = Q_t - P_t with the data D + S P is the same object as before when nothing links the steps
+    a = _ramped_series(make_synthetic_frames, 0.0, True, monkeypatch)
+    b = _ramped_series(make_synthetic_frames, 0.0, False, monkeypatch)
+    assert torch.allclose(a, b, rtol=0, atol=1e-4 * b.abs().max()), f"largest difference {(a - b).abs().max():.2e}"
+
+
+def test_time_link_includes_the_plane(make_synthetic_frames, monkeypatch):
+    # With a strong link the whole objects, plane included, come together: the steps of an unchanging Sun seen through
+    # changing gradients differ much less than when the link sees the objects without their planes, which keep each
+    # step's gradient
+    a = _ramped_series(make_synthetic_frames, 50.0, True, monkeypatch)
+    b = _ramped_series(make_synthetic_frames, 50.0, False, monkeypatch)
+    spread = lambda o: float(torch.sqrt(torch.mean((o - o.mean(dim=0))**2)))
+    assert spread(a) < 0.3 * spread(b), f"spread between steps {spread(a):.2e} with the plane in the link, {spread(b):.2e} without"

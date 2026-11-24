@@ -1836,6 +1836,17 @@ class Deconvolution(object):
         O_flat = torch.where(no_data[:, None, :], torch.zeros((), dtype=O_flat.dtype, device=O_flat.device), O_flat)
         return O_flat.reshape(n_s, M, Nx, Ny).to(S.dtype)
 
+    def plane_spectrum(self, plane, i):
+        """
+        Spectrum of the plane that remove_gradient_apodization took out of the frames of object i, apodized by the
+        window as the frames were, in the units of the object the time solve returns (fft2 without normalisation: the
+        object is D / S with D and S both in fft_norm), as (n_seq, n_t, nx, ny). None without that option.
+        """
+        if not self.remove_gradient_apodization or plane is None or plane[i] is None:
+            return None
+        pw = plane[i][:, 0, :, :].to(self.window.device) * self.window[None, :, :]
+        return rearrange(torch.fft.fft2(pw), '(s t) w h -> s t w h', t=self.n_t)
+
     def compute_object(self, images_ft, otf, sigma, plane, type_filter='tophat', pars_s0=None, pars_s2=None, need_filter=True):
         """
         Compute the object in Fourier space using the specified filter.
@@ -1917,10 +1928,13 @@ class Deconvolution(object):
                 constants = getattr(self, '_time_constants', None)
                 cached = constants.get(i) if constants is not None and not sigma[i].requires_grad else None
                 if cached is not None and cached[0] is images_ft[i] and cached[1] is sigma[i]:
-                    w, images_tmp, lambda_t = cached[2:]
+                    w, images_tmp, lambda_t, plane_src, plane_ft = cached[2:]
+                    if plane_src is not (None if plane is None else plane[i]):
+                        plane_ft = self.plane_spectrum(plane, i)
                     fresh = False
                 else:
                     w = torch.sqrt(gamma)
+                    plane_ft = self.plane_spectrum(plane, i)
                     images_tmp = rearrange(w * images_ft[i], '(s t) f w h -> s t f w h', t=self.n_t)
                     # lambda_t competes with sum_j |S_j|^2, which scales as n_frames / npix^2: the configured value is
                     # the weight for 64-px patches and 12 frames, and means the same for any patch size and frame count
@@ -1945,10 +1959,17 @@ class Deconvolution(object):
                             snr = step_snr(images_tmp.detach(), self.rho[i].to(images_tmp.device), fourier=True)
                         lambda_t = lambda_t * snr_link_factors(snr.double(), snr_threshold, getattr(self, "time_snr_reference", "window"))
                 if fresh and constants is not None and not sigma[i].requires_grad:
-                    constants[i] = (images_ft[i], sigma[i], w, images_tmp, lambda_t)
+                    constants[i] = (images_ft[i], sigma[i], w, images_tmp, lambda_t, None if plane is None else plane[i], plane_ft)
+
+                # The time term links the whole objects, plane included: remove_gradient_apodization fits the plane of
+                # each step to that step's frames alone, so under bad seeing it carries the seeing, and a link between
+                # objects without their planes could not correct it. With P_t the spectrum of plane_t x window, the
+                # data term |D - S O|^2 is |(D + S P) - S Q|^2 in Q_t = O_t + P_t: the same solve with the data D + S P
+                # links the Q_t, and O_t = Q_t - P_t
+                data_tmp = images_tmp if plane_ft is None else images_tmp + otf_tmp * plane_ft[:, :, None]
                 if self.loss_filter == 'wiener_time':
                     # All sequences at once: the same recursion per frequency, without a Python loop over the patches
-                    out = [self.solve_object_time_evolution_batched(otf_tmp, images_tmp, Reg_Space, lambda_s, lambda_t)]
+                    out = [self.solve_object_time_evolution_batched(otf_tmp, data_tmp, Reg_Space, lambda_s, lambda_t)]
                 for j in range(n_seq if self.loss_filter == 'wiener_time_contrast' else 0):
                     if self.loss_filter == 'wiener_time_contrast':
                         # rms of each step's frames without their mean. Dividing by the mean of the patch, as before,
@@ -1962,9 +1983,11 @@ class Deconvolution(object):
                     else:
                         contrast = None
                     
-                    tmp = self.solve_object_time_evolution(otf_tmp[j, ...], images_tmp[j, ...], Reg_Space, lambda_s, lambda_t, contrast=contrast)
+                    tmp = self.solve_object_time_evolution(otf_tmp[j, ...], data_tmp[j, ...], Reg_Space, lambda_s, lambda_t, contrast=contrast)
                     out.append(tmp[None, ...])
                 out = torch.cat(out, dim=0)
+                if plane_ft is not None:
+                    out = out - plane_ft.to(out.dtype)
                 time_ft = rearrange(out, 's t w h -> (s t) w h')
 
             if lean:
@@ -2133,6 +2156,10 @@ class Deconvolution(object):
         # If we want to do time regularization, first get the object with the Wiener filter
         if self.loss_filter == 'wiener_time' or self.loss_filter == 'wiener_time_contrast':
             # The loss uses only the unfiltered object: no scharmer/garrote mask (need_filter=False)
+            # Without the planes: in the loss, a link of the whole objects let the fit trade tip-tilt for the difference
+            # between the planes of neighbouring steps (shifting a ramp adds a constant). On a synthetic series with a
+            # bad step the object was 2.7-17 % worse and the step-to-step shift doubled; linked in the restored object
+            # only, the object improved in 6 of 6 scenes (2026-11-24)
             obj_ft, obj_filter_ft, obj_filter = self.compute_object(frames_ft, 
                                                                         otf, 
                                                                         sigma, 
