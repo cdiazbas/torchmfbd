@@ -155,6 +155,11 @@ Time series (``filter_loss: wiener_time``)
 * With the best weight of the time term the first and last steps improve less than the middle ones, because they have
   one neighbour. Penalizing the curvature of the time evolution instead of the difference between steps does not
   change this (mean error 0.224 → 0.219) and makes a series with one bad step worse (0.202 → 0.214).
+* With ``remove_gradient_apodization`` the time term of the restored object links the whole objects, plane included
+  (6 synthetic scenes of 12 steps with 2-px motion between steps, 3 of them with bad steps; T4): the plane of the
+  object comes 11-25 % closer to the truth's (6 of 6) and the object error falls by 0.03-0.29 % (6 of 6). Linking the
+  planes in the loss of the fit as well was worse: the fit traded tip-tilt for the difference between neighbouring
+  planes, and on one scene with a bad step the object was 2.7-17 % worse over three iteration settings.
 
 The real Sun in time
 ^^^^^^^^^^^^^^^^^^^^
