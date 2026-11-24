@@ -106,3 +106,21 @@ def test_scharmer_variants_share_the_fit(make_synthetic_frames):
     assert torch.equal(out['scharmer'].modes, out['scharmer_binary'].modes)
     assert not torch.equal(out['scharmer'].obj[0], out['scharmer_binary'].obj[0])
     assert torch.all(torch.isfinite(out['scharmer'].obj[0]))
+
+
+@pytest.mark.parametrize("device", ["cpu"] + (["cuda"] if torch.cuda.is_available() else []))
+def test_scharmer_filter_torch_matches_numpy(device):
+    # The torch steps (used when the sums are on the GPU) give the gain of the numpy ones to the bit, with the noise
+    # per frame as a fit passes it; run on the CPU as well, so that the path is checked without a GPU
+    Q, P, r = _sums(n=32, n_seq=3, seed=2)
+    sig = torch.tensor(np.random.default_rng(3).uniform(0.8, 1.2, (3, 5)))
+    dummy = types.SimpleNamespace(rho=[torch.tensor(r)], _box_mean=torchmfbd.Deconvolution._box_mean,
+                                  _box_mean_torch=torchmfbd.Deconvolution._box_mean_torch,
+                                  _region_from_centre=torchmfbd.Deconvolution._region_from_centre)
+    dummy._scharmer_filter_torch = lambda *a: torchmfbd.Deconvolution._scharmer_filter_torch(dummy, *a)
+    ref = torchmfbd.Deconvolution.scharmer_filter(dummy, Q, P, sig, 0)
+    out = torchmfbd.Deconvolution._scharmer_filter_torch(dummy, Q.to(device), P.to(device), sig.to(device), 0)
+    assert out.device.type == device
+    assert torch.equal(out.cpu(), ref)
+    if device == "cuda":
+        assert torch.equal(torchmfbd.Deconvolution.scharmer_filter(dummy, Q.cuda(), P.cuda(), sig.cuda(), 0).cpu(), ref)
