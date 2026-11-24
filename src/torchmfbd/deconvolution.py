@@ -166,8 +166,9 @@ class Deconvolution(object):
 
         self.loss_type = self.config['optimization']['loss_type']
         self.half_spectrum = self.config['optimization']['half_spectrum']
-        # Each frame cut again where it moved, at most this many pixels (MOMFBD's MAX_LOCAL_SHIFT): the frames are given
-        # with this margin, the fit uses their centre (see deconvolve)
+        # Each frame cut again where it moved, at most this many pixels (MOMFBD's MAX_LOCAL_SHIFT), when the frames are
+        # given with this margin (Patchify4D.patchify(..., margin=dec.follow_motion)); the fit uses their centre (see
+        # deconvolve). Frames without the margin are fitted as they are
         self.follow_motion = self.config['images']['follow_motion']
         # and, after a first pass, again from the fitted tip-tilt with a second pass (MOMFBD's adjustShifts). Off: on the
         # benchmark it gave nothing over a second pass without the re-cut, at twice the cost
@@ -175,6 +176,7 @@ class Deconvolution(object):
         self.frames_margin = []
         self.tilt_offset = None
         self.motion_shifts = None
+        self.follow_motion_on = False
         
         # Whether to take into account the piston mode
         self.add_piston = add_piston                     
@@ -2295,14 +2297,12 @@ class Deconvolution(object):
             self.n_seq, self.n_f, self.nx, self.ny = frames.shape
             self.n_t = 1
 
-        m = self.follow_motion
-        if self.nx != self.npix + 2 * m or self.ny != self.npix + 2 * m:
-            if m > 0:
-                raise ValueError(f"Frames are {self.nx}x{self.ny} pixels; with images.follow_motion = {m} they must be "
-                                 f"images.n_pixel + 2 x {m} = {self.npix + 2 * m} (Patchify4D.patchify(..., margin={m}))")
-            raise ValueError(f"Frames are {self.nx}x{self.ny} pixels but images.n_pixel is {self.npix}")
-        if m > 0 and self.time_present:
-            raise ValueError("images.follow_motion is not implemented for time series")
+        # images.n_pixel, or with the margin of follow_motion on each side
+        with_margin = self.follow_motion > 0 and self.nx == self.ny == self.npix + 2 * self.follow_motion
+        m = self.follow_motion if with_margin else 0
+        if not with_margin and (self.nx != self.npix or self.ny != self.npix):
+            extra = f" (or {self.npix + 2 * self.follow_motion} with the margin of images.follow_motion)" if self.follow_motion > 0 else ""
+            raise ValueError(f"Frames are {self.nx}x{self.ny} pixels but images.n_pixel is {self.npix}{extra}")
 
         # A pattern fixed on the detector, found from the frames of each burst (all time steps of a sequence
         # together: the pattern does not change in time)
@@ -2388,6 +2388,7 @@ class Deconvolution(object):
         self.frames_margin = []
         self.tilt_offset = None
         self.motion_shifts = None
+        self.follow_motion_on = False
 
         
         self.ind_object = []
@@ -2697,15 +2698,16 @@ class Deconvolution(object):
         inputs = (list(self.diversity), list(self.sigma))
 
         self.nullspace_P_seq = None
-        if self.follow_motion > 0:
-            self._follow_motion_check(infer_object, simultaneous_sequences)
+        self.motion_shifts = None
+        self.follow_motion_on = self.follow_motion > 0 and self._follow_motion_check(infer_object, simultaneous_sequences)
+        if self.follow_motion_on:
             self._cut_frames(self._shifts_from_correlation())
         # Refuse an unsupported restriction before the first pass, not after it (the full check is in nullspace_projectors)
         if self.nullspace_d_r0 is not None and (self.loss_type != 'joint' or infer_object or self.psf_model.lower() != 'kl'):
             raise ValueError("The wavefront restriction is implemented for the KL model and the joint loss, without infer_object")
         self._deconvolve_pass(**kwargs)
 
-        if self.follow_motion > 0 and self.follow_motion_refine:
+        if self.follow_motion_on and self.follow_motion_refine:
             modes_in = self._recut_from_tilt()
             if modes_in is not None:
                 self.logger.info(f"Second pass with the frames cut again where their fitted tip-tilt says they moved")
@@ -2719,18 +2721,38 @@ class Deconvolution(object):
             self._deconvolve_pass(**kwargs)
 
     def _follow_motion_check(self, infer_object, simultaneous_sequences):
-        """What images.follow_motion needs, refused before the first pass rather than after it."""
-        if self.psf_model.lower() not in ['zernike', 'kl'] or infer_object:
-            raise ValueError("images.follow_motion needs psf.model zernike or kl and infer_object=False")
+        """
+        Whether images.follow_motion can be used in this fit: frames with its margin, a wavefront model, no infer_object,
+        all sequences in one batch, one wavelength, no time series. If not, every frame given with the margin is fitted
+        at its central cut, as without follow_motion, and a warning (logged and RuntimeWarning) says why.
+        """
+        if all(fm is None for fm in self.frames_margin):
+            msg = (f"images.follow_motion = {self.follow_motion} off for this fit: the frames have no margin and are fitted "
+                   f"as given (Patchify4D.patchify(..., margin={self.follow_motion}) to follow the motion)")
+            self.logger.warning(msg)
+            warnings.warn(msg, RuntimeWarning)
+            return False
+        why = None
         if any(fm is None for fm in self.frames_margin):
-            raise ValueError("images.follow_motion: every add_frames call must give frames with the margin")
-        n_seq = self.frames_margin[0].shape[0]
-        if simultaneous_sequences < n_seq:
-            raise ValueError(f"images.follow_motion needs all {n_seq} sequences in one batch (simultaneous_sequences >= {n_seq})")
-        w = {float(self.config[f'object{i+1}']['wavelength']) for i in set(self.ind_object)}
-        if len(w) > 1:
-            raise ValueError("images.follow_motion is implemented for objects at one wavelength: only then is one whole-pixel "
-                             "cut the same tip-tilt for all of them")
+            why = "some objects were given without the margin"
+        elif self.psf_model.lower() not in ['zernike', 'kl'] or infer_object:
+            why = "it needs psf.model zernike or kl and infer_object=False"
+        elif self.time_present:
+            why = "it is not implemented for time series"
+        elif simultaneous_sequences < self.frames_margin[0].shape[0]:
+            why = f"it needs all {self.frames_margin[0].shape[0]} sequences in one batch (simultaneous_sequences)"
+        elif len({float(self.config[f'object{i+1}']['wavelength']) for i in set(self.ind_object)}) > 1:
+            why = "it is implemented for objects at one wavelength (only then is one whole-pixel cut the same tip-tilt for all)"
+        if why is None:
+            return True
+        msg = f"images.follow_motion = {self.follow_motion} off for this fit: {why}; the frames are fitted at their central cut"
+        self.logger.warning(msg)
+        warnings.warn(msg, RuntimeWarning)
+        m = self.follow_motion
+        for k, fm in enumerate(self.frames_margin):
+            if fm is not None:
+                self.frames[k] = fm[..., m:m + self.npix, m:m + self.npix].contiguous()
+        return False
 
     def _tilt_calibration(self, i=0):
         """
@@ -2996,7 +3018,7 @@ class Deconvolution(object):
 
         # follow_motion: the whole-pixel cut of every frame in tip-tilt units
         self.tilt_offset = None
-        if self.follow_motion > 0 and self.motion_shifts is not None:
+        if self.follow_motion_on and self.motion_shifts is not None:
             C = self._tilt_calibration(0)
             self.tilt_offset = (self.motion_shifts.to(C) @ torch.linalg.inv(C).T).float().to(self.device)
 

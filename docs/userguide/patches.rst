@@ -49,7 +49,9 @@ objects that share the wavefront (the cameras of a burst, the channels of phase 
 be at one wavelength. As in MOMFBD the shift is kept in tip-tilt units and added to the fitted tip-tilt: the tip-tilt
 referred to the mean of the frames, and the one compared between neighbouring patches by ``regularization.coupling``, is
 the total one, so the object stays where the mean of the uncut frames is. The shifts are in ``dec.motion_shifts``.
-All the sequences must be fitted in one batch (``simultaneous_sequences``), and time series are not supported.
+It needs all the sequences in one batch (``simultaneous_sequences``), a wavefront PSF model, objects at one wavelength
+and no time series; otherwise, or with frames without the margin, the fit goes on with the central cut of the frames
+and a warning says why. It is off by default (``images.follow_motion: 0``).
 
 On the 55 benchmark scenes (one object, 128-px patches, stride 32, the example's kl.yaml with the coupling of neighbours),
 the change of the object error against the fixed cutout, as a function of the frame motion (rms per axis), on a V100S:

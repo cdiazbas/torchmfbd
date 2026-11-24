@@ -118,15 +118,34 @@ def test_follow_motion_keeps_the_total_tilt(make_synthetic_frames):
     assert torch.allclose(before, after, atol=1e-4), float((before - after).abs().max())
 
 
-def test_follow_motion_refuses():
-    """Frames without the margin, and objects at different wavelengths."""
-    dec = torchmfbd.Deconvolution(_config(4))
-    with pytest.raises(ValueError, match='follow_motion'):
-        dec.add_frames(torch.zeros(1, 3, 32, 32), sigma=torch.ones(1, 3), id_object=0)
-    c = _config(4)
-    c['object2']['wavelength'] = 6302.0
-    dec = torchmfbd.Deconvolution(c)
-    dec.add_frames(torch.rand(1, 3, 40, 40), sigma=torch.ones(1, 3), id_object=0)
-    dec.add_frames(torch.rand(1, 3, 40, 40), sigma=torch.ones(1, 3), id_object=1)
-    with pytest.raises(ValueError, match='one wavelength'):
-        dec.deconvolve(infer_object=False, simultaneous_sequences=10, n_iterations=1)
+def test_follow_motion_default_and_fallbacks(make_synthetic_frames):
+    """Off by default; when on, used only with frames that carry its margin, and always with a warning when it cannot be:
+    frames of n_pixel are fitted as given (the fit is the one with follow_motion 0), a wrong size is refused, and a fit it does not support (here two wavelengths)
+    falls back to the central cut of the frames: the fit without follow_motion on those frames."""
+    with open(Path(__file__).parent / 'joint.yaml', 'r') as f:
+        c = yaml.safe_load(f)
+    c['optimization']['gpu'] = -1
+    assert torchmfbd.Deconvolution(copy.deepcopy(c)).follow_motion == 0
+    c = _config(5)
+
+    obj, frames, big, sigma = _moving_burst(make_synthetic_frames, [(0, 0)] * 5, 5)
+    with pytest.warns(RuntimeWarning, match='no margin'):
+        plain = _fit(copy.deepcopy(c), frames, sigma, n_iterations=5)
+    off = _fit(_config(0), frames, sigma, n_iterations=5)
+    assert not plain.follow_motion_on and plain.motion_shifts is None
+    assert torch.equal(plain.obj[0], off.obj[0])
+
+    with pytest.raises(ValueError, match='images.n_pixel'):
+        torchmfbd.Deconvolution(copy.deepcopy(c)).add_frames(torch.zeros(1, 3, 36, 36), sigma=torch.ones(1, 3), id_object=0)
+
+    c2 = _config(5)
+    c2['object2']['wavelength'] = 6302.0
+    dec = torchmfbd.Deconvolution(c2)
+    dec.logger.setLevel(50)
+    for k in range(2):
+        dec.add_frames(big, sigma=sigma * torch.ones(2, 5), id_object=k)
+    torch.manual_seed(0)
+    with pytest.warns(RuntimeWarning, match='one wavelength'):
+        dec.deconvolve(infer_object=False, optimizer='adam', simultaneous_sequences=200, n_iterations=5)
+    assert not dec.follow_motion_on and dec.motion_shifts is None
+    assert torch.equal(dec.frames[0], big[..., 5:37, 5:37])
