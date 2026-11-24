@@ -53,14 +53,29 @@ def fit_scene(sc, base, a):
     P4 = torchmfbd.Patchify4D()
     frames = sc["frames"]
     fr = torch.tensor((frames / frames.mean(axis=(-1, -2), keepdims=True))[None].astype("float32"))
-    pt = P4.patchify(fr, patch_size=a.patch, stride_size=a.stride, flatten_sequences=True, follow_motion=a.follow_motion)
+    if a.follow_fit:                              # the fit cuts every frame again where it moved (as MOMFBD)
+        conf["images"]["follow_motion"] = a.follow_fit
+        conf["images"]["follow_motion_refine"] = bool(a.follow_refine)
+    pt = P4.patchify(fr, patch_size=a.patch, stride_size=a.stride, flatten_sequences=True, follow_motion=a.follow_motion,
+                     margin=a.follow_fit)
     # with follow_motion, the rms of the whole-pixel shifts it measured (per axis): the frame motion as the data show it
     # (taken here: the patchify of the truth below resets motion_shifts)
     motion_rms = float(P4.motion_shifts.float().pow(2).mean().sqrt()) if P4.motion_shifts is not None else None
+    pt2 = None
+    if a.two_objects:                             # a second camera sharing the wavefront: same scene, its own noise
+        conf["object2"] = copy.deepcopy(conf["object1"])
+        g2 = torch.Generator().manual_seed(9000 + a.seed)
+        fr2 = fr + a.noise * torch.randn(fr.shape, generator=g2)
+        shared = P4.motion_shifts if (a.follow_motion and not a.prealign_independent) else None
+        P5 = torchmfbd.Patchify4D()
+        pt2 = P5.patchify(fr2, patch_size=a.patch, stride_size=a.stride, flatten_sequences=True,
+                          follow_motion=a.follow_motion if shared is None else 0, motion_shifts=shared, margin=a.follow_fit)
     torch.manual_seed(a.seed)
     t0 = time.time()
     d = torchmfbd.Deconvolution(conf); d.logger.setLevel(logging.ERROR)
     d.add_frames(pt, id_object=0, id_diversity=0, diversity=0.0)
+    if pt2 is not None:
+        d.add_frames(pt2, id_object=1, id_diversity=0, diversity=0.0)
     if a.su_rule:                                 # joint loss: object prior level from the noise, 250 (sigma/0.02)(12/N)
         sig = float(torch.mean(d.sigma[0])); nfr = d.frames[0].shape[1]
         d.config["object1"]["s_u_joint"] = 250.0 * (sig / 0.02) * max(12.0 / nfr, 1.0)
@@ -69,6 +84,8 @@ def fit_scene(sc, base, a):
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     t_fit = time.time() - t0
+    if a.follow_fit and getattr(d, "motion_shifts", None) is not None:
+        motion_rms = float(d.motion_shifts.float().pow(2).mean().sqrt())
     full = lambda o: np.squeeze(P4.unpatchify(o.cpu().float(), apodization=6, weight_type="cosine", weight_params=30).numpy())
     # the truth through the same patches, diffraction mask and recombination as the object
     tpp = P4.patchify(torch.tensor(sc["truth"][None, None].astype("float32")), patch_size=a.patch, stride_size=a.stride, flatten_sequences=True)[:, 0]
@@ -100,7 +117,12 @@ def fit_scene(sc, base, a):
         assert len(d.pars_raw_seq) == 1, "one batch of patches expected"
         kw = dict(pars_s0=d.pars_raw_seq[0][0], pars_s2=d.pars_raw_seq[0][1])
     with torch.no_grad():
-        _, _, ot = d.compute_object([d.frames_ft[0].to(d.device)], [otf], [d.sigma[0].to(d.device)], [d.plane[0].to(d.device)], **kw)
+        # every object (a second camera sees the same seeing through the same true PSFs); object 0 is scored. With
+        # --follow-fit or --follow-motion the frames were cut again, and the true PSFs (rolled by the scene's shifts) no
+        # longer match them: the control is then only indicative
+        n_o = d.n_o
+        _, _, ot = d.compute_object([d.frames_ft[i].to(d.device) for i in range(n_o)], [otf] * n_o,
+                                    [d.sigma[i].to(d.device) for i in range(n_o)], [d.plane[i].to(d.device) for i in range(n_o)], **kw)
     row["err_obj_true_psf"] = M.object_error(full(ot[0]), tr)
     if not a.no_control and row["err_obj_true_psf"] > M.CONTROL_SCENE_TOL * row["err_obj"]:
         raise RuntimeError(f"control failed {sc['name']}: the object from the true PSFs ({row['err_obj_true_psf']:.4f}) is more "
@@ -266,6 +288,10 @@ def main():
     p.add_argument("--no-control", action="store_true")
     p.add_argument("--half-spectrum", action="store_true", help="optimization.half_spectrum: the joint loss on half of the spectrum")
     p.add_argument("--follow-motion", type=int, default=0, help="patchify follow_motion: re-cut each frame where it moved (max px; 0: off)")
+    p.add_argument("--follow-fit", type=int, default=0, help="images.follow_motion: every frame cut again where it moved (max px), patches with that margin")
+    p.add_argument("--follow-refine", action="store_true", help="images.follow_motion_refine: cut again from the fitted tip-tilt and fit a second time")
+    p.add_argument("--two-objects", action="store_true", help="a second object sharing the wavefront (same scene, its own noise)")
+    p.add_argument("--prealign-independent", action="store_true", help="with --two-objects and --follow-motion: each object estimates its own shifts")
     p.add_argument("--motion-scale", type=float, default=1.0, help="scale the scenes' frame-to-frame motion (1: sigma 1.5 px)")
     p.add_argument("--holdout", action="store_true", help="the hold-out scenes (other seeds): to confirm a choice")
     p.add_argument("--only", help="comma list of scene-name prefixes to keep (a quick screen)")

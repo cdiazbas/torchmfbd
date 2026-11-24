@@ -64,7 +64,7 @@ class Patchify4D(object):
         return xp[bi, fi, rows, cols]
 
     def patchify(self, x, patch_size=64, stride_size=64, flatten_sequences=True, return_coordinates=False, follow_motion=0,
-                 motion_shifts=None):
+                 motion_shifts=None, margin=0):
         """
         Splits the input tensor into patches.
         Args:
@@ -73,6 +73,10 @@ class Patchify4D(object):
                 cut again where that frame moved: at the whole-pixel shift, at most follow_motion pixels, that registers
                 it to the mean of the frames of the patch (see _follow_motion). The patch grid, and so unpatchify, do not
                 change; the shifts are kept in self.motion_shifts.
+            margin (int): 0 (the default) or the margin, in pixels, of every patch: the patches are then
+                patch_size + 2 margin pixels across, on the same grid (the frames are padded by reflection at the edges of
+                the field), and unpatchify still takes patch_size patches. For images.follow_motion = margin, where the
+                deconvolution cuts every frame again where it moved.
             motion_shifts (torch.Tensor, optional): shifts (n_batch, n_patches, n_frames, 2) to cut with, instead of
                 estimating them: the motion_shifts of a previous call. Objects that share the wavefront (the cameras of
                 a burst, the channels of phase diversity) must be cut with the SAME shifts, or no common tip-tilt fits
@@ -113,6 +117,13 @@ class Patchify4D(object):
         self.n_patches = x_unfold.shape[-1]
 
         self.motion_shifts = None
+        Km = self.K                                  # size of the patches returned (K, or K + 2 margin)
+        if margin > 0:
+            if follow_motion > 0 or motion_shifts is not None:
+                raise ValueError("margin is for images.follow_motion, which cuts the frames itself: use it without follow_motion")
+            xp = F.pad(x_flat, (margin, margin, margin, margin), mode='reflect')
+            x_unfold = F.unfold(xp, kernel_size=self.K + 2 * margin, stride=self.S)
+            Km = self.K + 2 * margin
         if follow_motion > 0 or motion_shifts is not None:
             p = rearrange(x_unfold, 'b (f x y) L -> b L f x y', x=self.K, y=self.K)
             if motion_shifts is not None:
@@ -126,14 +137,14 @@ class Patchify4D(object):
             x_unfold = rearrange(p, 'b L f x y -> b (f x y) L')
         
         if self.flatten_sequences:            
-            a = rearrange(x_unfold, 'b (f x y) L -> (b L) f x y', x=self.K, y=self.K)
+            a = rearrange(x_unfold, 'b (f x y) L -> (b L) f x y', x=Km, y=Km)
             self.mask = rearrange(mask_unfold, 'b (f x y) L -> (b L) f x y', x=self.K, y=self.K)
         else:
-            a = rearrange(x_unfold, 'b (f x y) L -> b L f x y', x=self.K, y=self.K)
+            a = rearrange(x_unfold, 'b (f x y) L -> b L f x y', x=Km, y=Km)
             self.mask = rearrange(mask_unfold, 'b (f x y) L -> b L f x y', x=self.K, y=self.K)
             
             if len(self.batch_shape) > 1:
-                a = a.view(*self.batch_shape, self.n_patches, self.n_frames, self.K, self.K)
+                a = a.view(*self.batch_shape, self.n_patches, self.n_frames, Km, Km)
                 self.mask = self.mask.view(*self.batch_shape, self.n_patches, 1, self.K, self.K)
 
         if return_coordinates:

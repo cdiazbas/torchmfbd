@@ -28,6 +28,16 @@ def _check_config(config):
     if not isinstance(config["images"]["remove_fixed_pattern"], bool):
         raise ValueError(f"Invalid value for images.remove_fixed_pattern. It is {config['images']['remove_fixed_pattern']} but should be true or false")
 
+    if "follow_motion" not in config["images"]:
+        config["images"]["follow_motion"] = 0
+    fm = config["images"]["follow_motion"]
+    if isinstance(fm, bool) or not isinstance(fm, int) or fm < 0:
+        raise ValueError(f"Invalid value for images.follow_motion. It is {fm} but should be 0 (off) or the largest shift in pixels")
+    if "follow_motion_refine" not in config["images"]:
+        config["images"]["follow_motion_refine"] = False
+    if not isinstance(config["images"]["follow_motion_refine"], bool):
+        raise ValueError(f"Invalid value for images.follow_motion_refine. It is {config['images']['follow_motion_refine']} but should be true or false")
+
     # Optimization
     if "gpu" not in config["optimization"]:
         config["optimization"]["gpu"] = -1

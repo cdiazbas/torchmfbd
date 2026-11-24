@@ -166,6 +166,15 @@ class Deconvolution(object):
 
         self.loss_type = self.config['optimization']['loss_type']
         self.half_spectrum = self.config['optimization']['half_spectrum']
+        # Each frame cut again where it moved, at most this many pixels (MOMFBD's MAX_LOCAL_SHIFT): the frames are given
+        # with this margin, the fit uses their centre (see deconvolve)
+        self.follow_motion = self.config['images']['follow_motion']
+        # and, after a first pass, again from the fitted tip-tilt with a second pass (MOMFBD's adjustShifts). Off: on the
+        # benchmark it gave nothing over a second pass without the re-cut, at twice the cost
+        self.follow_motion_refine = self.config['images']['follow_motion_refine']
+        self.frames_margin = []
+        self.tilt_offset = None
+        self.motion_shifts = None
         
         # Whether to take into account the piston mode
         self.add_piston = add_piston                     
@@ -2146,6 +2155,21 @@ class Deconvolution(object):
         return loss_data_total, loss_prior_total, loss_total
 
     
+    def _center_tilt(self, modes):
+        """
+        The coefficients with the tip-tilt referred to its mean over the frames (as MOMFBD). With follow_motion the
+        frames were cut again where they moved, and self.tilt_offset (n_seq, n_f, 2) holds that cut in tip-tilt units:
+        the total tip-tilt of a frame is its coefficient plus its offset, and it is the total that is referred to the
+        mean, so that the object keeps the geometry it had before the cut (MOMFBD's currentTiltOffset).
+        """
+        mc = modes.clone()
+        mean = modes[:, :, 0:2].mean(dim=1, keepdim=True)
+        off = self.tilt_offset
+        if off is not None and off.shape[0] == modes.shape[0] and off.shape[1] == modes.shape[1]:
+            mean = mean + off.to(modes).mean(dim=1, keepdim=True)
+        mc[:, :, 0:2] = modes[:, :, 0:2] - mean
+        return mc
+
     def psfs_from_parameters(self, modes, diversity, n_active, jitter=None, shift=None):
         """
         PSFs and OTFs from the fitted parameters, built as the closure builds them: the first
@@ -2165,8 +2189,7 @@ class Deconvolution(object):
             (shift_x, shift_y) of the VAE, (n_seq, n_f).
         """
         if self.psf_model.lower() in ['zernike', 'kl']:
-            modes_centered = modes.clone()
-            modes_centered[:, :, 0:2] = modes_centered[:, :, 0:2] - modes[:, :, 0:2].mean(dim=1, keepdim=True)
+            modes_centered = self._center_tilt(modes)
             if self.remove_tt:
                 modes_centered[:, :, 0:2] = 0.0
             return self.compute_psfs(modes_centered[..., 0:n_active], diversity, jitter=jitter)
@@ -2272,8 +2295,14 @@ class Deconvolution(object):
             self.n_seq, self.n_f, self.nx, self.ny = frames.shape
             self.n_t = 1
 
-        if self.nx != self.npix or self.ny != self.npix:
+        m = self.follow_motion
+        if self.nx != self.npix + 2 * m or self.ny != self.npix + 2 * m:
+            if m > 0:
+                raise ValueError(f"Frames are {self.nx}x{self.ny} pixels; with images.follow_motion = {m} they must be "
+                                 f"images.n_pixel + 2 x {m} = {self.npix + 2 * m} (Patchify4D.patchify(..., margin={m}))")
             raise ValueError(f"Frames are {self.nx}x{self.ny} pixels but images.n_pixel is {self.npix}")
+        if m > 0 and self.time_present:
+            raise ValueError("images.follow_motion is not implemented for time series")
 
         # A pattern fixed on the detector, found from the frames of each burst (all time steps of a sequence
         # together: the pattern does not change in time)
@@ -2297,6 +2326,14 @@ class Deconvolution(object):
         else:
             self.fixed_pattern.append(None)
                 
+        # With follow_motion the frames come with a margin: it is kept to cut them again later, and the fit uses the centre
+        if m > 0:
+            self.frames_margin.append(frames)
+            frames = frames[..., m:m + self.npix, m:m + self.npix].contiguous()
+            self.nx = self.ny = self.npix
+        else:
+            self.frames_margin.append(None)
+
         if sigma is None:
             self.logger.info(f"Estimating noise...")            
 
@@ -2348,6 +2385,9 @@ class Deconvolution(object):
         """
         
         self.logger.info(f"Removing frames for all objects...")
+        self.frames_margin = []
+        self.tilt_offset = None
+        self.motion_shifts = None
 
         
         self.ind_object = []
@@ -2657,16 +2697,149 @@ class Deconvolution(object):
         inputs = (list(self.diversity), list(self.sigma))
 
         self.nullspace_P_seq = None
+        if self.follow_motion > 0:
+            self._follow_motion_check(infer_object, simultaneous_sequences)
+            self._cut_frames(self._shifts_from_correlation())
         # Refuse an unsupported restriction before the first pass, not after it (the full check is in nullspace_projectors)
         if self.nullspace_d_r0 is not None and (self.loss_type != 'joint' or infer_object or self.psf_model.lower() != 'kl'):
             raise ValueError("The wavefront restriction is implemented for the KL model and the joint loss, without infer_object")
         self._deconvolve_pass(**kwargs)
+
+        if self.follow_motion > 0 and self.follow_motion_refine:
+            modes_in = self._recut_from_tilt()
+            if modes_in is not None:
+                self.logger.info(f"Second pass with the frames cut again where their fitted tip-tilt says they moved")
+                self.diversity, self.sigma = list(inputs[0]), list(inputs[1])
+                self._deconvolve_pass(**dict(kwargs, modes_in=modes_in))
 
         if self.nullspace_d_r0 is not None:
             self.nullspace_P_seq = self.nullspace_projectors(self.nullspace_d_r0, self.nullspace_threshold)
             self.logger.info(f"Second pass with the wavefront restricted to the directions the data determine")
             self.diversity, self.sigma = list(inputs[0]), list(inputs[1])
             self._deconvolve_pass(**kwargs)
+
+    def _follow_motion_check(self, infer_object, simultaneous_sequences):
+        """What images.follow_motion needs, refused before the first pass rather than after it."""
+        if self.psf_model.lower() not in ['zernike', 'kl'] or infer_object:
+            raise ValueError("images.follow_motion needs psf.model zernike or kl and infer_object=False")
+        if any(fm is None for fm in self.frames_margin):
+            raise ValueError("images.follow_motion: every add_frames call must give frames with the margin")
+        n_seq = self.frames_margin[0].shape[0]
+        if simultaneous_sequences < n_seq:
+            raise ValueError(f"images.follow_motion needs all {n_seq} sequences in one batch (simultaneous_sequences >= {n_seq})")
+        w = {float(self.config[f'object{i+1}']['wavelength']) for i in set(self.ind_object)}
+        if len(w) > 1:
+            raise ValueError("images.follow_motion is implemented for objects at one wavelength: only then is one whole-pixel "
+                             "cut the same tip-tilt for all of them")
+
+    def _tilt_calibration(self, i=0):
+        """
+        (2, 2) matrix C: the image shift (dy, dx) in pixels per unit of the first two modes (columns). The PSF is the
+        |FFT|^2 of the pupil field on an n x n grid, so a wavefront that grows by 2 pi s / n per pupil pixel moves it by
+        exactly s pixels; the plane fitted to each mode over the pupil (its Z-tilt) gives its shift. The KL tip-tilt
+        modes carry some coma, so a shift of d pixels is the mode combination C^-1 d only to that extent.
+        """
+        pupil = self.pupil[i].double()
+        n = pupil.shape[-1]
+        yy, xx = torch.meshgrid(torch.arange(n, dtype=torch.float64, device=pupil.device),
+                                torch.arange(n, dtype=torch.float64, device=pupil.device), indexing='ij')
+        w = pupil.flatten()
+        A = torch.stack([yy.flatten(), xx.flatten(), torch.ones_like(w)], dim=1) * w[:, None]
+        C = torch.zeros((2, 2), dtype=torch.float64, device=pupil.device)
+        for k in (0, 1):
+            c = torch.linalg.lstsq(A, self.basis[i][k].double().flatten() * w).solution
+            C[0, k] = c[0] * n / (2.0 * np.pi)
+            C[1, k] = c[1] * n / (2.0 * np.pi)
+        return C
+
+    def _cut(self, fm, d):
+        """Frames (n_seq, n_f, n + 2m, n + 2m) cut at the whole-pixel shifts d (n_seq, n_f, 2) = (dy, dx) from their centre."""
+        m = self.follow_motion
+        dy, dx = d[..., 0].long().to(fm.device), d[..., 1].long().to(fm.device)
+        ar = torch.arange(self.npix, device=fm.device)
+        rows = (m + dy)[..., None, None] + ar[:, None]
+        cols = (m + dx)[..., None, None] + ar[None, :]
+        si = torch.arange(fm.shape[0], device=fm.device)[:, None, None, None]
+        fi = torch.arange(fm.shape[1], device=fm.device)[None, :, None, None]
+        return fm[si, fi, rows, cols]
+
+    def _shifts_from_correlation(self, n_iter=3):
+        """
+        The start of follow_motion: the whole-pixel shift of every frame of every patch, (n_seq, n_f, 2), from the peak of
+        the cross-correlation of its central cutout with the mean of the frames aligned with the current shifts (means
+        removed, Hann window: without it the edges of the cutouts and the large-scale gradients put a peak at zero lag),
+        iterated n_iter times from zero shifts so that the reference is not the blurred mean of frames that moved. The
+        correlation maps of all objects are added before the peak is taken: objects sharing the wavefront get one shift
+        per frame. The shifts are referred to their median over the frames of the burst, at most images.follow_motion px.
+        """
+        m, K = self.follow_motion, self.npix
+        w1 = torch.hann_window(K, periodic=False, dtype=torch.float64)
+        win = w1[:, None] * w1[None, :]
+
+        def prep(a):
+            a = a.double().cpu()
+            return (a - a.mean(dim=(-1, -2), keepdim=True)) * win
+
+        Q = [torch.fft.fft2(prep(fm[..., m:m + K, m:m + K])) for fm in self.frames_margin]
+        S, Fr = Q[0].shape[0], Q[0].shape[1]
+        d = torch.zeros((S, Fr, 2), dtype=torch.float64)
+        for it in range(n_iter):
+            r = 0.0
+            for fm, q in zip(self.frames_margin, Q):
+                ref = torch.fft.fft2(prep(self._cut(fm, d).cpu()).mean(dim=1, keepdim=True))
+                r = r + torch.fft.ifft2(ref * torch.conj(q)).real
+            idx = torch.argmax(r.reshape(S, Fr, K * K), dim=-1)
+            sy, sx = idx // K, idx % K
+            sy = torch.where(sy > K // 2, sy - K, sy)
+            sx = torch.where(sx > K // 2, sx - K, sx)
+            new = torch.stack([-sy, -sx], dim=-1).double()
+            new = (new - torch.median(new, dim=1, keepdim=True).values).clamp(-m, m)
+            if torch.equal(new, d):
+                break
+            d = new
+        return d
+
+    def _cut_frames(self, d):
+        """
+        Every frame cut from its margin at the whole-pixel shift d (n_seq, n_f, 2) = (dy, dx), kept in
+        self.motion_shifts; the pass keeps it in tip-tilt units in self.tilt_offset (through _tilt_calibration), as
+        MOMFBD's currentTiltOffset: the total tip-tilt of a frame is its coefficient plus that offset.
+        """
+        for k, fm in enumerate(self.frames_margin):
+            self.frames[k] = self._cut(fm, d).contiguous()
+        self.motion_shifts = d.long().cpu()           # the pass turns it into self.tilt_offset, once it has the basis
+        self.logger.info(f"follow_motion: frames cut at shifts of rms {float(d.double().pow(2).mean().sqrt()):.2f} px, "
+                         f"{float((d != 0).any(-1).double().mean()):.2f} of the frames moved")
+
+    def _recut_from_tilt(self):
+        """
+        MOMFBD's adjustShifts after the first pass: the fitted tip-tilt of every frame (the one its PSF used, through
+        _tilt_calibration) says how far its image still is from where its cut put it. That tip-tilt is referred to the
+        mean over the frames, a free reference, so it is taken relative to its median over the frames of the burst and
+        then rounded to whole pixels; where that is not zero the frame is cut again (_cut_frames, at most
+        images.follow_motion px from the centre). Returns the coefficients to start the second pass from (those of the
+        first with the change of cut taken out of the tip-tilt, so that every PSF starts where it ended), or None if no
+        cut changed.
+        """
+        m = self.follow_motion
+        modes = self.modes_seq[0].double().to(self.device)                 # (n_seq, n_f, n_modes)
+        C = self._tilt_calibration(0)
+        left = self._center_tilt(modes)[..., 0:2] @ C.T                    # (n_seq, n_f, 2), pixels (dy, dx)
+        left = left - torch.median(left, dim=1, keepdim=True).values
+        d_now = self.motion_shifts.double().to(self.device)
+        want = d_now + torch.round(left)
+        n_clip = int((want.abs() > m).any(-1).sum())
+        if n_clip > 0:
+            self.logger.warning(f"follow_motion: {n_clip} frames moved more than {m} px; they are cut at {m} px")
+        d_new = want.clamp(-m, m)
+        changed = (d_new != d_now).any(-1)
+        self.logger.info(f"follow_motion: the fitted tip-tilt moves the cut of {float(changed.double().mean()):.2f} of the frames")
+        if not bool(changed.any()):
+            return None
+        self._cut_frames(d_new)
+        out = modes.clone()
+        out[..., 0:2] = modes[..., 0:2] - (d_new - d_now) @ torch.linalg.inv(C).T
+        return out.float()
 
     def restrict_modes(self, modes):
         """
@@ -2820,6 +2993,12 @@ class Deconvolution(object):
 
         # Define all basis
         self._define_basis()
+
+        # follow_motion: the whole-pixel cut of every frame in tip-tilt units
+        self.tilt_offset = None
+        if self.follow_motion > 0 and self.motion_shifts is not None:
+            C = self._tilt_calibration(0)
+            self.tilt_offset = (self.motion_shifts.to(C) @ torch.linalg.inv(C).T).float().to(self.device)
 
         # Phase diversity acts on the wavefront; the nmf and vae PSFs have none
         if self.psf_model.lower() in ['nmf', 'vae']:
@@ -3303,8 +3482,7 @@ class Deconvolution(object):
                         # Compute PSF from current wavefront coefficients, tip-tilt referenced to its mean over the
                         # frames (as MOMFBD): a common shift of all PSFs is a shift of the object, and anchoring it to
                         # one frame would put that frame's local image motion into the object of each patch
-                        modes_centered = modes.clone()
-                        modes_centered[:, : , 0:2] = modes_centered[:, :, 0:2] - modes[:, :, 0:2].mean(dim=1, keepdim=True)
+                        modes_centered = self._center_tilt(modes)
 
                         if self.remove_tt:
                             modes_centered[:, :, 0:2] = 0.0
@@ -3326,6 +3504,10 @@ class Deconvolution(object):
                     loss_coupling = None
                     if self.coupling_E_batch is not None:
                         m = modes_centered[..., 0:min(self.coupling_modes, n_active)]
+                        if self.tilt_offset is not None and m.shape[-1] >= 2:
+                            # neighbours compare their TOTAL tip-tilt: with follow_motion their frames may have been
+                            # cut at different whole-pixel shifts
+                            m = torch.cat([m[..., 0:2] + self.tilt_offset.to(m), m[..., 2:]], dim=-1)
                         E = self.coupling_E_batch
                         loss_coupling = self.coupling_lambda * torch.sum((m[E[:, 0]] - m[E[:, 1]])**2) / (m.shape[0] * (self.npix - 1)**2)
                     

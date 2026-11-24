@@ -29,40 +29,52 @@ In this example, ``patches`` has shape ``(64, 12, 64, 64)``. If we use a differe
 generates a tensor of shape ``(196, 12, 64, 64)``.
 
 If the image moves between the frames by more than a pixel or two, the window of a fixed cutout covers a different piece of
-the scene in every frame. ``follow_motion`` cuts each frame of each patch again where it moved, as MOMFBD does: at the
-whole-pixel shift (at most ``follow_motion`` pixels) that registers it to the mean of the frames of that patch. The patch
-grid, and so ``unpatchify``, do not change; the shifts are kept in ``patchify.motion_shifts``.
+the scene in every frame. MOMFBD cuts each frame of each patch again where it moved (``MAX_LOCAL_SHIFT``, 5 px by
+default). Here this is ``images.follow_motion`` in the configuration: the patches are cut with a margin of that many
+pixels, and the deconvolution cuts every frame inside it.
 
 ::
 
-    patches = patchify.patchify(frames, patch_size=128, stride_size=32, flatten_sequences=True, follow_motion=5)
+    config['images']['follow_motion'] = 5
+    patches = patchify.patchify(frames, patch_size=128, stride_size=32, flatten_sequences=True, margin=5)
+    dec = torchmfbd.Deconvolution(config)
+    dec.add_frames(patches, ...)            # patches of 138 px; the fit uses 128
+    dec.deconvolve(...)
+    obj = patchify.unpatchify(dec.obj, ...)  # 128-px objects, on the grid of the patches
 
-On the 55 benchmark scenes (one object, 128-px patches, stride 32), against the fixed cutout, as a function of the frame
-motion (rms per axis):
+For every frame of every patch the shift is the peak of the cross-correlation of its central cutout with the mean of the
+frames aligned with the current shifts (Hann window, three iterations from zero shifts), referred to the median of the
+burst. The correlation maps of all the objects added with ``add_frames`` are summed before the peak is taken, so that the
+objects that share the wavefront (the cameras of a burst, the channels of phase diversity) get the same shift; they must
+be at one wavelength. As in MOMFBD the shift is kept in tip-tilt units and added to the fitted tip-tilt: the tip-tilt
+referred to the mean of the frames, and the one compared between neighbouring patches by ``regularization.coupling``, is
+the total one, so the object stays where the mean of the uncut frames is. The shifts are in ``dec.motion_shifts``.
+All the sequences must be fitted in one batch (``simultaneous_sequences``), and time series are not supported.
 
-======== ======================= =======================
-motion   ``follow_motion=5``      ``follow_motion=10``
-======== ======================= =======================
-0 px     +0.2 %                  +1.3 %
-1.5 px   -0.2 %                  -0.4 %
-3 px     -5.0 %                  -5.2 %
-4.5 px   -14.1 %                 -14.3 %
-6 px     -18.8 %                 -20.1 %
-======== ======================= =======================
+On the 55 benchmark scenes (one object, 128-px patches, stride 32, the example's kl.yaml with the coupling of neighbours),
+the change of the object error against the fixed cutout, as a function of the frame motion (rms per axis), on a V100S:
 
-5 is MOMFBD's default largest local shift. It costs about 40 ms on a GPU for the example's burst. Two cautions before
-using it with several objects:
+======== ============================== ===============================
+motion   ``patchify(follow_motion=5)``   ``images.follow_motion = 5``
+======== ============================== ===============================
+0 px     +0.2 %                          -0.0 %
+3 px     -5.0 %                          -9.4 %
+6 px     -18.8 %                         -39.2 % (better in 53 of 55)
+======== ============================== ===============================
 
-* objects that share the wavefront (the cameras of a burst, the channels of phase diversity) must be cut with the same
-  shifts: estimate them on one (``patchify.motion_shifts``) and pass them to the others with ``motion_shifts=``.
-  Estimated separately, the two cameras of the example's burst disagree on 9.5 % of the shifts, by up to 2 px.
-* the coupling of neighbouring patches (``regularization.coupling``) includes the tip-tilt, and neighbouring patches
-  can get different whole-pixel shifts for the same frame (9 % on the example's burst, 21-31 % with 6-px motion).
-  The combination is not measured yet.
+It costs 4 % of the fit time (2.60 s instead of 2.49 s per scene). The first column is the older pre-alignment in
+``patchify``, which registers each patch to the plain mean of its frames, without a window and without the tip-tilt
+bookkeeping: the window and the iterations make the difference (-37.9 % at 6 px without the bookkeeping), the bookkeeping
+adds 1.6-1.9 %. With two objects that share the wavefront, at 6 px: -35.8 %, against -19.4 % for the pre-alignment with
+shared shifts (both with ``follow_motion_refine``, below).
 
-The examples do not use it: the example's 8542 burst moves by 0.14-0.28 px rms between frames. The default of
-``patchify`` stays 0: it also cuts masks, coordinates and other data for which a re-cut has no meaning, and with it
-``unpatchify`` no longer returns the frames.
+``images.follow_motion_refine`` adds MOMFBD's other step: after the fit, the fitted tip-tilt says where each frame still
+is, the frames are cut again there and fitted a second time. On the benchmark it gave nothing over a second pass without
+the re-cut (+0.7 % at 0 px, +0.8 % at 3 px, +4.0 % at 6 px) at twice the cost, so it is off by default. A second pass by
+itself lowers the error by 3.5 % at 0 px, as more iterations would.
+
+``patchify(follow_motion=...)`` and ``patchify(motion_shifts=...)`` keep the older pre-alignment of the patches, for use
+without a deconvolution. The examples use neither: the example's 8542 burst moves by 0.14-0.28 px rms between frames.
 
 The patches can be unpatchified using the ``unpatchify`` method:
 
