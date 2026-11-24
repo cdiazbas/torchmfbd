@@ -32,6 +32,11 @@ def _check_config(config):
     if "gpu" not in config["optimization"]:
         config["optimization"]["gpu"] = -1
 
+    if "half_spectrum" not in config["optimization"]:
+        config["optimization"]["half_spectrum"] = False
+    if not isinstance(config["optimization"]["half_spectrum"], bool):
+        raise ValueError(f"Invalid value for optimization.half_spectrum. It is {config['optimization']['half_spectrum']} but should be true or false")
+
     if "transform" not in config["optimization"]:
         config["optimization"]["transform"] = "none"
 

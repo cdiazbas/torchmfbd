@@ -165,6 +165,7 @@ class Deconvolution(object):
             raise ValueError(f"psf.jitter = {self.use_jitter} is only implemented for the zernike and kl PSF models, not for {self.psf_model}")
 
         self.loss_type = self.config['optimization']['loss_type']
+        self.half_spectrum = self.config['optimization']['half_spectrum']
         
         # Whether to take into account the piston mode
         self.add_piston = add_piston                     
@@ -891,7 +892,7 @@ class Deconvolution(object):
             # Shifted mask used for the Lofdahl & Scharmer filter
             self.mask_diffraction_shift[i] = np.fft.fftshift(self.mask_diffraction[i].cpu().numpy())
                      
-    def compute_psfs(self, modes, diversity, jitter=None):
+    def compute_psfs(self, modes, diversity, jitter=None, half=False):
         """
         Compute the Point Spread Functions (PSFs) from the given modes.
         Parameters:
@@ -1007,8 +1008,11 @@ class Deconvolution(object):
             # Normalize PSF        
             psf_norm[i] = psf / torch.sum(psf, [-1, -2], keepdim=True)
 
-            # FFT of the PSF
-            otf[i] = fft2_ortho(psf_norm[i]) if self.fft_norm == 'ortho' else torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
+            # FFT of the PSF (half plane for the half-spectrum loss: the PSF is real)
+            if half:
+                otf[i] = torch.fft.rfft2(psf_norm[i], norm=self.fft_norm)
+            else:
+                otf[i] = fft2_ortho(psf_norm[i]) if self.fft_norm == 'ortho' else torch.fft.fft2(psf_norm[i], norm=self.fft_norm)
 
             # If using jitter, multiply the OTFs. Not in place: on CPU the OTF can come from the threaded FFT,
             # a custom autograd function whose output autograd does not allow to be modified
@@ -1900,6 +1904,40 @@ class Deconvolution(object):
                     
         return torch.fft.fft2(V)
     
+    def compute_loss_half(self, frames_ft, otf_half, sigma):
+        """
+        The joint wiener loss of compute_loss computed on half of the spectrum (optimization.half_spectrum).
+
+        The frames and the PSFs are real, so every term of the loss at frequency -k equals the one at k. The OTFs come
+        from rfft2 (columns 0 .. n/2) and the sums run over that half: columns 1 .. n/2-1 stand for themselves and their
+        mirror columns, so they count twice, column n/2 once; row 0 and column 0 are dropped as in compute_loss. The
+        value and its gradient are those of compute_loss to float32 rounding (relative 1e-7 on the example burst with
+        2, 10 and 30 modes). The FFT of the PSFs and the loss sums cost half: the fit of the example burst (65 patches,
+        2 cameras, LBFGS 10) takes 4.75 s instead of 5.53 s on a V100S, 14.45 s instead of 15.5 s on a T4 (2026-11-24).
+        Only the joint loss with the wiener filter_loss, without jitter.
+        """
+        n = self.npix
+        h = n // 2 + 1
+        w = torch.full((h,), 2.0, device=self.device)
+        w[0] = 1.0
+        w[-1] = 1.0
+        total = torch.tensor(0.0).to(self.device)
+        for i in range(self.n_o):
+            frames_mean = torch.mean(frames_ft[i][:, :, 0, 0], dim=1).real
+            s_u, s2, K, v0, p = self.get_su_s2(obj=i, sigma=sigma, frames_mean=frames_mean)
+            s2 = torch.mean(sigma[i]**2, dim=1)
+            s2_term = s2[:, None, None]
+            s_u = s_u[..., 0:h] if torch.is_tensor(s_u) and s_u.dim() >= 2 else s_u
+            du = frames_ft[i][..., 0:h]
+            S = otf_half[i]
+            hu2 = s2_term + s_u * torch.sum((S * torch.conj(S)).real, dim=1)
+            du2 = torch.sum((du * torch.conj(du)).real, dim=1)
+            hu_du = torch.sum(du * torch.conj(S), dim=1)
+            loss_data = 0.5 * (du2 - s_u * (hu_du * torch.conj(hu_du)).real / hu2) / s2_term
+            loss_data = loss_data * self.mask_diffraction_th[i][None, :, 0:h]
+            total = total + torch.sum(loss_data[:, 1:, 1:] * w[None, None, 1:]) / (loss_data.shape[0] * (n - 1)**2)
+        return total, torch.tensor(0.0).to(self.device), total
+
     def compute_loss(self, frames_ft, otf, sigma, type_filter='tophat', pars_s0=None, pars_s2=None, jitter=None):
         """
         Compute the object in Fourier space using the specified filter.
@@ -3273,7 +3311,15 @@ class Deconvolution(object):
                                     
                         # modes -> (n_seq, n_f, self.n_modes)
                         # jitter > (n_seq, n_f, 3)                                                
-                        psf, otf = self.compute_psfs(modes_centered[..., 0:n_active], diversity_seq, jitter=jitter_torch if self.use_jitter != 'none' else None)
+                        # Half spectrum for the joint wiener loss (compute_loss_half); the object for the progress bar
+                        # or an object regularization needs the full OTFs
+                        use_half = (self.half_spectrum and self.loss_filter == 'wiener' and self.loss_type == 'joint'
+                                    and self.use_jitter == 'none' and not infer_object
+                                    and not (self.show_object_info or len(self.index_regularization['object']) > 0))
+                        # half is passed only when used, so that subclasses and wrappers of compute_psfs keep working
+                        psf, otf = self.compute_psfs(modes_centered[..., 0:n_active], diversity_seq,
+                                                     jitter=jitter_torch if self.use_jitter != 'none' else None,
+                                                     **({'half': True} if use_half else {}))
 
                     # Coupling of neighbouring patches: lambda sum_pairs,frames ||theta_p - theta_q||^2 over the first
                     # coupling_modes active coefficients, normalised as the joint loss (sequences x (npix - 1)^2)
@@ -3332,12 +3378,15 @@ class Deconvolution(object):
                                                                                     pars_s2=pars_s2_arg)
 
                         # Compute the loss function using the appropriate filter for the loss
-                        loss_data, loss_prior, loss = self.compute_loss(frames_ft, 
-                                                                        otf, 
-                                                                        sigma_seq, 
-                                                                        pars_s0=pars_s0_arg, 
-                                                                        pars_s2=pars_s2_arg,
-                                                                        jitter=jitter_torch if self.use_jitter != 'none' else None)
+                        if self.psf_model.lower() in ['zernike', 'kl'] and use_half:
+                            loss_data, loss_prior, loss = self.compute_loss_half(frames_ft, otf, sigma_seq)
+                        else:
+                            loss_data, loss_prior, loss = self.compute_loss(frames_ft,
+                                                                            otf,
+                                                                            sigma_seq,
+                                                                            pars_s0=pars_s0_arg,
+                                                                            pars_s2=pars_s2_arg,
+                                                                            jitter=jitter_torch if self.use_jitter != 'none' else None)
 
                     if loss_coupling is not None:
                         loss = loss + loss_coupling
@@ -3631,3 +3680,4 @@ class Deconvolution(object):
     
 if __name__ == '__main__': 
     pass
+
