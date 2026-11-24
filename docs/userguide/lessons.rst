@@ -73,6 +73,13 @@ Object filter: ``scharmer`` or ``garrote``
 Measured with the joint loss only. The ``scharmer`` of these measurements is today's ``scharmer_binary``: until
 November 2026 ``scharmer`` was the binary mask; it now names the filter as MOMFBD applies it (see the configuration).
 
+* ``scharmer`` is MOMFBD's filter so that a restoration can reproduce MOMFBD's; it is not the most accurate. On the
+  bench (55 scenes, ``kl.yaml``, V100S) it is 3.8 % worse than ``scharmer_binary`` (better in 13 of 55; ``real`` +8.2 %,
+  0 of 18; ``synth`` -0.1 %), and ``garrote`` 2.6 % worse: the continuous gain attenuates real signal at 0.25-0.50 of
+  the cutoff. The fit is the same with either filter. Where the PSFs are poor (a step of bad seeing fitted from 15
+  frames), it removes the stripes the binary mask leaves: the Ca K power at 0.5-1.0 of the cutoff fell from 3365 to 783
+  times MOMFBD's on a CHROMIS step.
+
 * With 64-pixel patches, ``garrote`` lowers the object error by 8.0 % (29 of 31 scenes), mostly above half the
   diffraction cutoff, and leaves the PSFs unchanged.
 * With 128-pixel patches (stride 64) ``scharmer`` (Löfdahl–Scharmer) is better: −23.0 % against −20.8 % for
