@@ -64,7 +64,8 @@ motion   ``patchify(follow_motion=5)``   ``images.follow_motion = 5``
 6 px     -18.8 %                         -39.2 % (better in 53 of 55)
 ======== ============================== ===============================
 
-It costs 4 % of the fit time (2.60 s instead of 2.49 s per scene). The first column is the older pre-alignment in
+On 55 other scenes (hold-out seeds) at 6 px: -40.2 % (better in 53 of 55). It costs 4 % of the fit time (2.60 s
+instead of 2.49 s per scene). The first column is the older pre-alignment in
 ``patchify``, which registers each patch to the plain mean of its frames, without a window and without the tip-tilt
 bookkeeping: the window and the iterations make the difference (-37.9 % at 6 px without the bookkeeping), the bookkeeping
 adds 1.6-1.9 %. With two objects that share the wavefront, at 6 px: -35.8 %, against -19.4 % for the pre-alignment with
