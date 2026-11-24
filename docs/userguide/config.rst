@@ -98,7 +98,7 @@ optimization
 * ``softplus_scale`` : scale of the softplus function
 * ``lr_obj`` : learning rate for the object
 * ``lr_modes`` : learning rate for the modes
-* ``half_spectrum`` : ``false`` (the default) or ``true``. With ``true`` the joint loss with the ``wiener`` filter_loss is computed on half of the spectrum (``rfft2``): the frames and the PSFs are real, so the other half carries the same terms. The loss and its gradient are the same to float32 rounding; the fit of the example's 8542 burst takes 4.75 s instead of 5.53 s on a V100S. Not used with jitter, the marginal loss, the time filters or an object regularization
+* ``half_spectrum`` : ``true`` (the default) or ``false``. With ``true`` the joint loss with the ``wiener`` filter_loss is computed on half of the spectrum (``rfft2``): the frames and the PSFs are real, so the other half carries the same terms. The loss and its gradient are the same to float32 rounding; the fit of the example's 8542 burst takes 4.75 s instead of 5.53 s on a V100S. Not used with jitter, the marginal loss, the time filters or an object regularization
 * ``show_object_info`` : if True, the object information (contrast, minimum and maximum) is shown during the optimization
 * ``loss_type`` : type of loss to be used. Options are ``joint`` (which uses a joint loss on the object and the modes) or ``marginal`` (which uses the marginal loss on the modes only)
 
@@ -243,7 +243,7 @@ optimization
 * ``lr_obj`` : learning rate for the object
 * ``lr_tt`` : learning rate for the tip-tilt
 * ``lr_modes`` : learning rate for the modes
-* ``half_spectrum`` : ``false`` (the default) or ``true``. With ``true`` the joint loss with the ``wiener`` filter_loss is computed on half of the spectrum (``rfft2``): the frames and the PSFs are real, so the other half carries the same terms. The loss and its gradient are the same to float32 rounding; the fit of the example's 8542 burst takes 4.75 s instead of 5.53 s on a V100S. Not used with jitter, the marginal loss, the time filters or an object regularization
+* ``half_spectrum`` : ``true`` (the default) or ``false``. With ``true`` the joint loss with the ``wiener`` filter_loss is computed on half of the spectrum (``rfft2``): the frames and the PSFs are real, so the other half carries the same terms. The loss and its gradient are the same to float32 rounding; the fit of the example's 8542 burst takes 4.75 s instead of 5.53 s on a V100S. Not used with jitter, the marginal loss, the time filters or an object regularization
 
 regularization
 ^^^^^^^^^^^^^^

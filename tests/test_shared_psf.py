@@ -18,12 +18,12 @@ def _fit(make_synthetic_frames, monkeypatch, wavelength2=8542.0, diversity2=0.0)
     orig = torchmfbd.Deconvolution.compute_psfs
     seen = []
 
-    def spy(self, modes, diversity, jitter=None):
-        psf, otf = orig(self, modes, diversity, jitter)
+    def spy(self, modes, diversity, jitter=None, **kw):
+        psf, otf = orig(self, modes, diversity, jitter, **kw)
         flags = getattr(self, "_psf_same_as_first", None)
         if flags is not None:
             self._psf_same_as_first = None
-            psf_alone, otf_alone = orig(self, modes, diversity, jitter)        # every object computed on its own
+            psf_alone, otf_alone = orig(self, modes, diversity, jitter, **kw)  # every object computed on its own
             self._psf_same_as_first = flags
             seen.append((list(flags), otf[1] is otf[0], torch.equal(otf[1], otf_alone[1]), torch.equal(psf[1], psf_alone[1])))
         return psf, otf

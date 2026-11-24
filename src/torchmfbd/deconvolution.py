@@ -1914,7 +1914,7 @@ class Deconvolution(object):
         value and its gradient are those of compute_loss to float32 rounding (relative 1e-7 on the example burst with
         2, 10 and 30 modes). The FFT of the PSFs and the loss sums cost half: the fit of the example burst (65 patches,
         2 cameras, LBFGS 10) takes 4.75 s instead of 5.53 s on a V100S, 14.45 s instead of 15.5 s on a T4 (2026-11-24).
-        Only the joint loss with the wiener filter_loss, without jitter.
+        Only the joint loss with the wiener filter_loss, without jitter. On by default (optimization.half_spectrum).
         """
         n = self.npix
         h = n // 2 + 1
