@@ -70,7 +70,8 @@ All three parts are needed:
 Object filter: ``scharmer`` or ``garrote``
 ------------------------------------------
 
-Measured with the joint loss only.
+Measured with the joint loss only. The ``scharmer`` of these measurements is today's ``scharmer_binary``: until
+November 2026 ``scharmer`` was the binary mask; it now names the filter as MOMFBD applies it (see the configuration).
 
 * With 64-pixel patches, ``garrote`` lowers the object error by 8.0 % (29 of 31 scenes), mostly above half the
   diffraction cutoff, and leaves the PSFs unchanged.

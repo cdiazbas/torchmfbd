@@ -252,7 +252,7 @@ def main():
     p.add_argument("--optimizer", default="lbfgs"); p.add_argument("--iterations", type=int, default=10)
     p.add_argument("--coupling", type=float, default=0.0, help="lambda of the coupling of neighbouring patches (0: off)")
     p.add_argument("--coupling-modes", type=int, default=10)
-    p.add_argument("--filter", choices=["scharmer", "garrote", "tophat"], help="object filter (default: the yaml's)")
+    p.add_argument("--filter", choices=["scharmer", "scharmer_binary", "garrote", "tophat"], help="object filter (default: the yaml's)")
     p.add_argument("--su-rule", action="store_true", help="joint loss: s_u_joint = 250 (sigma/0.02)(12/N) from the data")
     p.add_argument("--nullspace", type=float, default=0.0, help="D/r0 of the experimental wavefront restriction (0: off)")
     p.add_argument("--time-lambda", type=float, default=5e-4, help="time sets: weight of the time term (regularization time); 5e-4 measured best on real-time")
