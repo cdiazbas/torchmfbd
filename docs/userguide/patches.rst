@@ -77,7 +77,9 @@ the re-cut (+0.7 % at 0 px, +0.8 % at 3 px, +4.0 % at 6 px) at twice the cost, s
 itself lowers the error by 3.5 % at 0 px, as more iterations would.
 
 ``patchify(follow_motion=...)`` and ``patchify(motion_shifts=...)`` keep the older pre-alignment of the patches, for use
-without a deconvolution. The examples use neither: the example's 8542 burst moves by 0.14-0.28 px rms between frames.
+without a deconvolution. The example's 8542 burst moves by only 0.14-0.28 px rms between frames, so
+``examples/spot_8542/spot_8542_kl_follow_motion.py`` adds a known motion to it (2.6 px rms per axis by default), fits it
+with the fixed cutout and with ``follow_motion = 5``, and checks the cuts against the motion added (88 % within 1 px).
 
 The patches can be unpatchified using the ``unpatchify`` method:
 
