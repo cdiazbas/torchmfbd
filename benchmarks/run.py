@@ -44,6 +44,8 @@ def fit_scene(sc, base, a):
         conf["regularization"] = dict(conf.get("regularization") or {}, coupling={"lambda": a.coupling, "n_modes": a.coupling_modes})
     if a.filter:
         conf["object1"]["image_filter"] = a.filter
+    if a.half_spectrum:                           # the joint loss on half of the spectrum (same loss, faster)
+        conf["optimization"]["half_spectrum"] = True
     if a.nullspace:                               # experimental wavefront restriction (joint loss only)
         conf["psf"]["nullspace_d_r0"] = a.nullspace
     if a.seed:                                    # the wavefront starts at zero: another seed only matters with a
@@ -51,7 +53,7 @@ def fit_scene(sc, base, a):
     P4 = torchmfbd.Patchify4D()
     frames = sc["frames"]
     fr = torch.tensor((frames / frames.mean(axis=(-1, -2), keepdims=True))[None].astype("float32"))
-    pt = P4.patchify(fr, patch_size=a.patch, stride_size=a.stride, flatten_sequences=True)
+    pt = P4.patchify(fr, patch_size=a.patch, stride_size=a.stride, flatten_sequences=True, follow_motion=a.follow_motion)
     torch.manual_seed(a.seed)
     t0 = time.time()
     d = torchmfbd.Deconvolution(conf); d.logger.setLevel(logging.ERROR)
@@ -177,6 +179,9 @@ def fit_time_scene(sc, base, a):
 
 def run(a):
     import yaml
+    if a.motion_scale != 1.0:                     # frame-to-frame motion of the scenes scaled (integer shifts, sigma 1.5 px x scale)
+        ms = float(a.motion_scale)
+        S._motion = lambda rng, j: (0, 0) if j == 0 else tuple(int(v) for v in np.rint(ms * 1.5 * rng.standard_normal(2)))
     with open(a.config) as f:
         base = yaml.safe_load(f)
     base.pop("object2", None)
@@ -256,6 +261,9 @@ def main():
     p.add_argument("--h5", help="the burst file, for the real sets")
     p.add_argument("--seq", help="the time sequence file, for the real-time set")
     p.add_argument("--no-control", action="store_true")
+    p.add_argument("--half-spectrum", action="store_true", help="optimization.half_spectrum: the joint loss on half of the spectrum")
+    p.add_argument("--follow-motion", type=int, default=0, help="patchify follow_motion: re-cut each frame where it moved (max px)")
+    p.add_argument("--motion-scale", type=float, default=1.0, help="scale the scenes' frame-to-frame motion (1: sigma 1.5 px)")
     p.add_argument("--holdout", action="store_true", help="the hold-out scenes (other seeds): to confirm a choice")
     p.add_argument("--only", help="comma list of scene-name prefixes to keep (a quick screen)")
     p.add_argument("-o", "--output", default="run.json")

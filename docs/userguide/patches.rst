@@ -26,7 +26,21 @@ In this example, ``patches`` has shape ``(64, 12, 64, 64)``. If we use a differe
     
     patches = patchify.patchify(frames, patch_size=64, stride_size=32, flatten_sequences=True)
 
-generates a tensor of shape ``(196, 12, 64, 64)``. The patches can be unpatchified using the ``unpatchify`` method:
+generates a tensor of shape ``(196, 12, 64, 64)``.
+
+If the image moves between the frames by more than a pixel or two, the window of a fixed cutout covers a different piece of
+the scene in every frame. ``follow_motion`` cuts each frame of each patch again where it moved, as MOMFBD does: at the
+whole-pixel shift (at most ``follow_motion`` pixels) that registers it to the mean of the frames of that patch. The patch
+grid, and so ``unpatchify``, do not change; the shifts are kept in ``patchify.motion_shifts``.
+
+::
+
+    patches = patchify.patchify(frames, patch_size=128, stride_size=32, flatten_sequences=True, follow_motion=10)
+
+On the benchmark scenes with frames moving by 6 px rms it lowers the object error by 20 %; with motion below about 2 px it
+does not help. Measure the motion of the data first: the example's 8542 burst moves by 0.14-0.28 px rms between frames.
+
+The patches can be unpatchified using the ``unpatchify`` method:
 
 ::
 
