@@ -111,8 +111,8 @@ def _check_config(config):
     
     for k, v in config.items():
         if "object" in k:
-            if v["image_filter"] not in ["tophat", "scharmer", "garrote"]:
-                raise ValueError(f"Invalid value for image_filter. It is {v['image_filter']} but should be tophat, scharmer or garrote")
+            if v["image_filter"] not in ["tophat", "scharmer", "scharmer_binary", "garrote"]:
+                raise ValueError(f"Invalid value for image_filter. It is {v['image_filter']} but should be tophat, scharmer, scharmer_binary or garrote")
             if "s_u_joint" not in v:
                 v["s_u_joint"] = 100.0
 

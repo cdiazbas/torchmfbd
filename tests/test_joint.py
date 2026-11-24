@@ -135,7 +135,8 @@ def test_time_loss_skips_the_mask(make_synthetic_frames, monkeypatch):
         config['regularization'] = {'time': {'lambda': 1e-3}}
         obj, frames = make_synthetic_frames(config_path, 2, 5, 0.005, seed=0)
         calls = []
-        orig_cobj, orig_ls = torchmfbd.Deconvolution.compute_object, torchmfbd.Deconvolution.lofdahl_scharmer_filter
+        orig_cobj = torchmfbd.Deconvolution.compute_object
+        orig_ls, orig_sf = torchmfbd.Deconvolution.lofdahl_scharmer_filter, torchmfbd.Deconvolution.scharmer_filter
         def cobj(self, *a, **k):
             if force_mask:
                 k['need_filter'] = True
@@ -143,8 +144,12 @@ def test_time_loss_skips_the_mask(make_synthetic_frames, monkeypatch):
         def ls(self, *a, **k):
             calls.append(1)
             return orig_ls(self, *a, **k)
+        def sf(self, *a, **k):
+            calls.append(1)
+            return orig_sf(self, *a, **k)
         monkeypatch.setattr(torchmfbd.Deconvolution, 'compute_object', cobj)
         monkeypatch.setattr(torchmfbd.Deconvolution, 'lofdahl_scharmer_filter', ls)
+        monkeypatch.setattr(torchmfbd.Deconvolution, 'scharmer_filter', sf)
         dec = torchmfbd.Deconvolution(config)
         dec.add_frames(frames[None, ...], sigma=0.005 * torch.ones(1, 2, 5), id_object=0, id_diversity=0, diversity=0.0)
         dec.deconvolve(infer_object=False, optimizer='lbfgs', simultaneous_sequences=200, n_iterations=3)
@@ -206,7 +211,7 @@ def test_object_independent_of_batch_noise():
 
     gen = torch.Generator().manual_seed(3)
     n_frames = 6
-    for image_filter in ('scharmer', 'garrote', 'tophat'):
+    for image_filter in ('scharmer', 'scharmer_binary', 'garrote', 'tophat'):
         dec = torchmfbd.Deconvolution(config)
         dec.n_o = 1
         dec.n_t = 1

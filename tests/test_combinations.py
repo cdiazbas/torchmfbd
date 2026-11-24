@@ -26,7 +26,7 @@ def _config(loss, filt, coupling, nullspace):
 
 
 @pytest.mark.parametrize("loss,filt,coupling,nullspace,optimizer",
-                         list(itertools.product(["joint", "marginal"], ["scharmer", "garrote", "tophat"],
+                         list(itertools.product(["joint", "marginal"], ["scharmer", "scharmer_binary", "garrote", "tophat"],
                                                 [False, True], [False, True], ["lbfgs", "adam"])))
 def test_options_together(make_synthetic_frames, loss, filt, coupling, nullspace, optimizer):
     cfg = _config(loss, filt, coupling, nullspace)
@@ -63,14 +63,14 @@ def _time_fit(make_synthetic_frames, filt, coupling, lam_t=1.0, lam_c=30.0):
     return d
 
 
-@pytest.mark.parametrize("filt", ["scharmer", "garrote", "tophat"])
+@pytest.mark.parametrize("filt", ["scharmer", "scharmer_binary", "garrote", "tophat"])
 def test_time_with_each_filter(make_synthetic_frames, filt):
     d = _time_fit(make_synthetic_frames, filt, False)
     assert torch.all(torch.isfinite(d.loss)) and d.loss[-1] < d.loss[0]
     assert torch.all(torch.isfinite(d.obj[0]))
 
 
-@pytest.mark.parametrize("filt", ["scharmer", "garrote", "tophat"])
+@pytest.mark.parametrize("filt", ["scharmer", "scharmer_binary", "garrote", "tophat"])
 def test_patch_coupling_with_time(make_synthetic_frames, filt):
     d = _time_fit(make_synthetic_frames, filt, True)
     assert torch.all(torch.isfinite(d.loss)) and d.loss[-1] < d.loss[0]

@@ -1257,6 +1257,91 @@ class Deconvolution(object):
         
         return torch.tensor(mask.astype('float32')).to(Sconj_S.device)
 
+    @staticmethod
+    def _box_mean(a, n):
+        """
+        Mean of a (n_seq, ny, nx) array over the rows [y-n, y+n) and the columns [x-n, x+n) of each point, clipped at
+        the edges of the array: the window of MOMFBD's smooth(data, n, n) (redux, src/lib/image/utils.cpp).
+        """
+        out = a
+        for ax in (1, 2):
+            N = out.shape[ax]
+            c = np.cumsum(np.concatenate([np.zeros_like(np.take(out, [0], axis=ax)), out], axis=ax), axis=ax)
+            lo = np.clip(np.arange(N) - n, 0, N)
+            hi = np.clip(np.arange(N) + n, 0, N)
+            shape = [-1 if k == ax else 1 for k in range(3)]
+            out = (np.take(c, hi, axis=ax) - np.take(c, lo, axis=ax)) / np.reshape(hi - lo, shape)
+        return out
+
+    def scharmer_filter(self, Sconj_S, Sconj_I, sigma, i_obj):
+        """
+        The noise filter of MOMFBD (Löfdahl & Scharmer 1994 as implemented in redux, ScharmerFilter in
+        src/lib/image/utils.cpp): a continuous gain, not a mask.
+
+        From the ratio |sum S* D|^2 / sum|S|^2, averaged over a 2 x 2 box, the gain is 1 - sigma^2 / ratio, averaged
+        between f and -f, set to 0 below 0.2 and to 1 above 1, with the zero frequency at 1. Only the region of
+        non-zero gain connected to the zero frequency is kept, with its values; the gain is then averaged over a box of
+        radius 4 frequencies (the OTF grid of redux has the size of the patch, as ours, so the radius means the same)
+        and set to 0 beyond 0.9 of the diffraction cutoff (redux's FILTER_CUTOFF default). Unlike redux, the zero
+        frequency is set back to 1 after the smoothing, so that the object keeps its mean.
+
+        Against lofdahl_scharmer_filter (gain 1 everywhere inside the region, image_filter 'scharmer_binary'), an
+        island of noise frequencies joined to the region by a narrow path no longer passes at full gain: on a CHROMIS
+        step of bad seeing the binary mask kept such an arm at gain 1 out to 0.6 of the cutoff, which shows as stripes
+        in the object; this filter keeps it below 0.36 (2026-11-24).
+
+        Parameters
+        ----------
+        Sconj_S : torch.Tensor
+            sum_j |S_j|^2, shape (n_seq, nx, ny).
+        Sconj_I : torch.Tensor
+            sum_j S_j^* D_j, shape (n_seq, nx, ny).
+        sigma : torch.Tensor or float
+            Noise variance: a scalar, one value per sequence or one per frame (averaged over the frames), the number
+            lofdahl_scharmer_filter uses.
+        i_obj : int
+            Object, for its frequency grid (rho in units of the diffraction cutoff).
+
+        Returns
+        -------
+        torch.Tensor
+            The gain in [0, 1], (n_seq, nx, ny), in the FFT layout.
+        """
+        Q = Sconj_S.real.detach().cpu().numpy().astype(np.float64)
+        P2 = (torch.conj(Sconj_I) * Sconj_I).real.detach().cpu().numpy().astype(np.float64)
+
+        # The sampled pupil's OTF ends before the nominal cutoff: where sum|S|^2 is at roundoff level there is no signal
+        support = Q > 1e-10 * Q[:, 0:1, 0:1]
+        ratio = np.where(support, P2 / np.where(support, Q, 1.0), 0.0)
+        ratio = self._box_mean(np.fft.fftshift(ratio, axes=(-2, -1)), 1)
+
+        if hasattr(sigma, 'dim') and sigma.dim() > 0:
+            s2 = sigma if sigma.dim() == 1 else torch.mean(sigma, dim=tuple(range(1, sigma.dim())))
+            s2 = s2.detach().cpu().numpy().astype(np.float64)[:, None, None]
+        else:
+            s2 = float(sigma)
+
+        r = np.where(ratio > 0, s2 / np.where(ratio > 0, ratio, 1.0), np.inf)
+        n_seq, ny, nx = r.shape
+        iy = (ny - np.arange(ny)) % ny                     # -f on the centred grid (even sizes)
+        ix = (nx - np.arange(nx)) % nx
+        gain = np.maximum(1.0 - 0.5 * (r + r[:, iy][:, :, ix]), 0.0)
+        gain[gain < 0.2] = 0.0
+        gain[gain > 1.0] = 1.0
+        gain[:, ny // 2, nx // 2] = 1.0
+
+        for ib in range(n_seq):
+            gain[ib] = gain[ib] * flood((gain[ib] > 0).astype(np.uint8), (ny // 2, nx // 2), connectivity=1, tolerance=0)   # 4-connected, as redux
+
+        gain = self._box_mean(gain, 4)
+        # redux leaves the zero frequency at its smoothed value (0.93-0.95 in a test patch), which scales the object's mean;
+        # the mean is kept here, the one intended departure from MOMFBD
+        gain[:, ny // 2, nx // 2] = 1.0
+        rho = np.fft.fftshift(self.rho[i_obj].detach().cpu().numpy(), axes=(-2, -1))
+        gain[:, rho > 0.9] = 0.0
+
+        return torch.tensor(np.fft.ifftshift(gain, axes=(-2, -1)).astype('float32')).to(Sconj_S.device)
+
     def garrote_filter(self, Sconj_S, Sconj_I, sigma):
         """
         Continuous version of the Löfdahl-Scharmer filter: the gain 1 - sigma^2 sum|S|^2 / |sum S* D|^2,
@@ -1693,7 +1778,7 @@ class Deconvolution(object):
         otf (torch.Tensor): 
             The Fourier transform of the point spread function (PSF).
         type_filter (str, optional): 
-            The type of filter to use ('tophat'/'scharmer'/'garrote'). Default is 'tophat'.
+            The type of filter to use ('tophat'/'scharmer'/'scharmer_binary'/'garrote'). Default is 'tophat'.
         need_filter (bool, optional):
             If False, the scharmer or garrote mask is not computed and the filtered object carries only the
             diffraction mask; the unfiltered object (the first output) is the same. For callers that use only
@@ -1746,10 +1831,10 @@ class Deconvolution(object):
                 raise ValueError("enforce_positive_object is not available with the time-coupled filters: the positivity ADMM has no time coupling")
 
             if time_coupled:
-                # Spatial regularisation of the time solve: none for scharmer and garrote (their gain selects
-                # the frequencies), s2/s_u for tophat, so that lambda_t -> 0 gives back each filter's estimate
+                # Spatial regularisation of the time solve: none for the scharmer filters and garrote (their gain
+                # selects the frequencies), s2/s_u for tophat, so that lambda_t -> 0 gives back each filter's estimate
                 plane_shape = dict(size=otf[i].shape[-2:], dtype=otf[i].real.dtype, device=otf[i].device)
-                if self.image_filter[i] in ('scharmer', 'garrote'):
+                if self.image_filter[i] in ('scharmer', 'scharmer_binary', 'garrote'):
                     Reg_Space, lambda_s = torch.zeros(**plane_shape), 0.0
                 else:
                     reg = s2_term / s_u
@@ -1818,8 +1903,8 @@ class Deconvolution(object):
                 out_ft[i] = time_ft
                 continue
 
-            # Lofdahl & Scharmer (1994) mask, or its continuous gain
-            if self.image_filter[i] in ('scharmer', 'garrote'):
+            # Lofdahl & Scharmer (1994) filter as MOMFBD applies it, its binary mask, or the garrote gain
+            if self.image_filter[i] in ('scharmer', 'scharmer_binary', 'garrote'):
                 # In the time path the object of a step also carries what the time term brings from its neighbours,
                 # so its mask is computed from the sums over the neighbouring steps: from the step alone, a noisy
                 # step keeps only a few frequencies and loses what its neighbours provide
@@ -1831,6 +1916,8 @@ class Deconvolution(object):
                     # scharmer flood fill runs on the CPU, took 62 % of a time-series fit and was thrown away
                     mask = self.mask_diffraction_th[i][None, :, :]
                 elif self.image_filter[i] == 'scharmer':
+                    mask = self.scharmer_filter(SS_mask, SI_mask, s2_filt.detach(), i) * self.mask_diffraction_th[i][None, :, :]
+                elif self.image_filter[i] == 'scharmer_binary':
                     mask = self.lofdahl_scharmer_filter(SS_mask, SI_mask, s2_filt.detach()) * self.mask_diffraction_th[i][None, :, :]
                 else:
                     mask = self.garrote_filter(SS_mask, SI_mask, s2_filt) * self.mask_diffraction_th[i][None, :, :]
@@ -1959,7 +2046,7 @@ class Deconvolution(object):
         otf (torch.Tensor): 
             The Fourier transform of the point spread function (PSF).
         type_filter (str, optional): 
-            The type of filter to use ('tophat'/'scharmer'/'garrote'). Default is 'tophat'.
+            The type of filter to use ('tophat'/'scharmer'/'scharmer_binary'/'garrote'). Default is 'tophat'.
         Returns:
         --------
         torch.Tensor: The computed object in Fourier space.
@@ -2115,14 +2202,16 @@ class Deconvolution(object):
 
                 loss_prior = torch.tensor(0.0).to(self.device)
                 
-                # Wiener data term weighted by the Lofdahl & Scharmer (1994) mask, or by its continuous gain
-                if self.image_filter[i] in ('scharmer', 'garrote'):
+                # Wiener data term weighted by the Lofdahl & Scharmer (1994) mask, or by the garrote gain. Both scharmer
+                # filters weight the loss with the binary mask: the filter of MOMFBD shapes only the restored object
+                # (compute_object), so the fit is the same with either
+                if self.image_filter[i] in ('scharmer', 'scharmer_binary', 'garrote'):
 
                     # We assume, for the moment, that the noise is the same for all frames
                     Sconj_S = torch.sum(torch.conj(otf[i]) * otf[i], dim=1)
                     Sconj_I = torch.sum(torch.conj(otf[i]) * frames_ft[i], dim=1)
 
-                    if self.image_filter[i] == 'scharmer':
+                    if self.image_filter[i] in ('scharmer', 'scharmer_binary'):
                         mask = self.lofdahl_scharmer_filter(Sconj_S, Sconj_I, sigma[i]**2) * self.mask_diffraction_th[i][None, :, :]
                     else:
                         mask = self.garrote_filter(Sconj_S, Sconj_I, sigma[i]**2) * self.mask_diffraction_th[i][None, :, :]
